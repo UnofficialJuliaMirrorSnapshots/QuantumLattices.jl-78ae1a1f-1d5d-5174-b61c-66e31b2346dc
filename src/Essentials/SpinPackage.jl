@@ -1,11 +1,10 @@
 module SpinPackage
 
-using StaticArrays: SVector
 using Printf: @printf,@sprintf
-using ..Spatials: PID,AbstractBond,pidtype
-using ..DegreesOfFreedom: IID,Internal,Index,FilteredAttributes,Table,OID,Operator,IDFConfig
+using ..Spatials: PID
+using ..DegreesOfFreedom: IID,Internal,Index,FilteredAttributes,OID,Operator
 using ..Terms: wildcard,constant,Subscript,Subscripts,Coupling,Couplings,couplingcenters,Term,TermCouplings,TermAmplitude,TermModulate
-using ...Interfaces: rank,dimension
+using ...Interfaces: rank,kind
 using ...Prerequisites: Float,decimaltostr,delta
 using ...Mathematics.VectorSpaces: VectorSpace,IsMultiIndexable,MultiIndexOrderStyle
 using ...Mathematics.AlgebraOverFields: SimpleID,ID
@@ -13,16 +12,17 @@ using ...Mathematics.AlgebraOverFields: SimpleID,ID
 import ..DegreesOfFreedom: otype,isHermitian
 import ..Terms: couplingcenter,statistics,abbr
 import ...Interfaces: dims,inds,expand,matrix
+import ...Mathematics.AlgebraOverFields: rawelement
 
 export SID,Spin,SIndex,usualspinindextotuple
 export SOperator
 export SCID,SpinCoupling
-export Heisenberg,Ising,S⁰,Sˣ,Sʸ,Sᶻ
+export Heisenberg,Ising,Gamma,Sˣ,Sʸ,Sᶻ
 export SpinTerm
 
-const sidtagmap=Dict(1=>'i',2=>'x',3=>'y',4=>'z',5=>'+',6=>'-')
+const sidtagmap=Dict(1=>'x',2=>'y',3=>'z',4=>'+',5=>'-')
 const sidseqmap=Dict(v=>k for (k,v) in sidtagmap)
-const sidajointmap=Dict('i'=>'i','x'=>'x','y'=>'y','z'=>'z','+'=>'-','-'=>'+')
+const sidajointmap=Dict('x'=>'x','y'=>'y','z'=>'z','+'=>'-','-'=>'+')
 
 """
     SID <: IID
@@ -34,18 +34,18 @@ struct SID <: IID
     spin::Float
     tag::Char
     function SID(orbital::Int,spin::Real,tag::Char)
-        @assert tag in ('i','x','y','z','+','-') "SID error: not supported tag($tag)."
+        @assert tag in ('x','y','z','+','-') "SID error: not supported tag($tag)."
         new(orbital,spin,tag)
     end
 end
 Base.fieldnames(::Type{<:SID})=(:orbital,:spin,:tag)
 
 """
-    SID(;orbital::Int=1,spin::Real=0.5,tag::Char='i')
+    SID(;orbital::Int=1,spin::Real=0.5,tag::Char='z')
 
 Create a spin id.
 """
-SID(;orbital::Int=1,spin::Real=0.5,tag::Char='i')=SID(orbital,spin,tag)
+SID(;orbital::Int=1,spin::Real=0.5,tag::Char='z')=SID(orbital,spin,tag)
 
 """
     adjoint(sid::SID) -> SID
@@ -65,8 +65,7 @@ function matrix(sid::SID,dtype::Type{<:Number}=Complex{Float})
     for i=1:N,j=1:N
         row,col=N+1-i,N+1-j
         m,n=sid.spin+1-i,sid.spin+1-j
-        result[row,col]=sid.tag=='i' ? delta(i,j) :
-                        sid.tag=='x' ? (delta(i+1,j)+delta(i,j+1))*sqrt(sid.spin*(sid.spin+1)-m*n)/2 :
+        result[row,col]=sid.tag=='x' ? (delta(i+1,j)+delta(i,j+1))*sqrt(sid.spin*(sid.spin+1)-m*n)/2 :
                         sid.tag=='y' ? (delta(i+1,j)-delta(i,j+1))*sqrt(sid.spin*(sid.spin+1)-m*n)/2im :
                         sid.tag=='z' ? delta(i,j)*m :
                         sid.tag=='+' ? delta(i+1,j)*sqrt(sid.spin*(sid.spin+1)-m*n) :
@@ -147,7 +146,14 @@ statistics(opt::SOperator)=opt|>typeof|>statistics
 statistics(::Type{<:SOperator})='B'
 
 """
-    SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='i',subscript=wildcard)=SCID(center,atom,orbital,tag,subscript)
+    rawelement(::Type{<:SOperator})
+
+Get the raw name of a type of SOperator.
+"""
+rawelement(::Type{<:SOperator})=SOperator
+
+"""
+    SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='z',subscript=wildcard)=SCID(center,atom,orbital,tag,subscript)
 
 The id of a spin coupling.
 """
@@ -158,11 +164,11 @@ struct SCID{C,A,O,S} <: SimpleID
     tag::Char
     subscript::S
     function SCID(center,atom,orbital,tag::Char,subscript)
-        @assert tag in ('i','x','y','z','+','-') "SCID error: not supported tag($tag)."
+        @assert tag in ('x','y','z','+','-') "SCID error: not supported tag($tag)."
         new{typeof(center),typeof(atom),typeof(orbital),typeof(subscript)}(center,atom,orbital,tag,subscript)
     end
 end
-SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='i',subscript=wildcard)=SCID(center,atom,orbital,tag,subscript)
+SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='z',subscript=wildcard)=SCID(center,atom,orbital,tag,subscript)
 Base.fieldnames(::Type{<:SCID})=(:center,:atom,:orbital,:tag,:subscript)
 
 """
@@ -239,13 +245,13 @@ Get the multiplication between two spin couplings.
 Base.:*(sc1::SpinCoupling,sc2::SpinCoupling)=SpinCoupling(sc1.value*sc2.value,sc1.id*sc2.id,sc1.subscripts*sc2.subscripts)
 
 """
-    expand(sc::SpinCoupling,pid::PID,spin::Spin,species::Union{Val{S},Nothing}=nothing) where S -> Union{SCExpand,Tuple{}}
-    expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},species::Union{Val{S},Nothing}=nothing) where {N,S} -> Union{SCExpand,Tuple{}}
+    expand(sc::SpinCoupling,pid::PID,spin::Spin,kind::Union{Val{K},Nothing}=nothing) where K -> Union{SCExpand,Tuple{}}
+    expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},kind::Union{Val{K},Nothing}=nothing) where {N,K} -> Union{SCExpand,Tuple{}}
 
 Expand a spin coupling with the given set of point ids and spin degrees of freedom.
 """
-expand(sc::SpinCoupling,pid::PID,spin::Spin,species::Union{Val{S},Nothing}=nothing) where S=expand(sc,(pid,),(spin,),species)
-function expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},species::Union{Val{S},Nothing}=nothing) where {N,S}
+expand(sc::SpinCoupling,pid::PID,spin::Spin,kind::Union{Val{K},Nothing}=nothing) where K=expand(sc,(pid,),(spin,),kind)
+function expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},kind::Union{Val{K},Nothing}=nothing) where {N,K}
     centers=couplingcenters(typeof(sc),sc.id.centers,Val(N))
     rpids=NTuple{rank(sc),eltype(pids)}(pids[centers[i]] for i=1:rank(sc))
     rspins=NTuple{rank(sc),eltype(spins)}(spins[centers[i]] for i=1:rank(sc))
@@ -301,17 +307,25 @@ function Ising(tag::Char;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Un
     return Couplings(SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(tag,tag)))
 end
 
+"""
+    Gamma(  tag::Char;
+            centers::Union{NTuple{2,Int},Nothing}=nothing,
+            atoms::Union{NTuple{2,Int},Nothing}=nothing,
+            orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
+            ) -> Couplings{ID{<:NTuple{2,SCID}},SpinCoupling{2,Float,ID{<:NTuple{2,SCID}}}}
+
+The Gamma couplings.
+"""
+function Gamma(tag::Char;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Union{NTuple{2,Int},Nothing}=nothing,orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing)
+    @assert tag in ('x','y','z') "Gamma error: not supported input tag($tag)."
+    t1,t2=tag=='x' ? ('y','z') : tag=='y' ? ('z','x') : ('x','y')
+    sc1=SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t1,t2))
+    sc2=SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t2,t1))
+    return Couplings(sc1,sc2)
+end
+
 scsinglewrapper(::Nothing)=nothing
 scsinglewrapper(value::Int)=(value,)
-
-"""
-    S⁰(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{I,SpinCoupling{1,Float,I}}  where I<:ID{<:Tuple{SCID}}
-
-The single S⁰ coupling.
-"""
-function S⁰(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing)
-    Couplings(SpinCoupling{1}(1.0,tags=('i',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
-end
 
 """
     Sˣ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{I,SpinCoupling{1,Float,I}}  where I<:ID{<:Tuple{SCID}}
@@ -341,8 +355,7 @@ function Sᶻ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=noth
 end
 
 """
-    SpinTerm{R}(id::Symbol,value::Number;
-                neighbor::Int,
+    SpinTerm{R}(id::Symbol,value::Number,bondkind::Any;
                 couplings::Union{Function,Coupling,Couplings},
                 amplitude::Union{Function,Nothing}=nothing,
                 modulate::Union{Function,Bool}=false,
@@ -350,16 +363,18 @@ end
 
 Spin term.
 
-Type alias for `Term{'B',:SpinTerm,R,id,<:Number,Int,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
+Type alias for `Term{'B',:SpinTerm,R,id,<:Number,<:Any,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
 """
-const SpinTerm{R,id,V<:Number,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{'B',:SpinTerm,R,id,V,Int,C,A,M}
-function SpinTerm{R}(id::Symbol,value::Number;
-                    neighbor::Int,
+const SpinTerm{R,id,V<:Number,B<:Any,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{'B',:SpinTerm,R,id,V,B,C,A,M}
+function SpinTerm{R}(id::Symbol,value::Number,bondkind::Any;
                     couplings::Union{Function,Coupling,Couplings},
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
                     ) where R
-    Term{'B',:SpinTerm,R}(id,value,neighbor,couplings=couplings,amplitude=amplitude,modulate=modulate)
+    isa(couplings,TermCouplings) || (couplings=TermCouplings(couplings))
+    isa(amplitude,TermAmplitude) || (amplitude=TermAmplitude(amplitude))
+    isa(modulate,TermModulate) || (modulate=modulate===false ? nothing : TermModulate(id,modulate))
+    Term{'B',:SpinTerm,R,id}(value,bondkind,couplings,amplitude,modulate,1)
 end
 abbr(::Type{<:SpinTerm})=:sp
 isHermitian(::Type{<:SpinTerm})=true

@@ -5,11 +5,11 @@ using StaticArrays: SVector
 using QuantumLattices.Essentials.Terms
 using QuantumLattices.Essentials.Spatials: Point,PID,Bond,decompose
 using QuantumLattices.Essentials.DegreesOfFreedom: IDFConfig,Table,IID,Index,Internal,FilteredAttributes,OID,Operator,Operators
-using QuantumLattices.Interfaces: rank,update!,id
+using QuantumLattices.Interfaces: rank,update!,id,kind
 using QuantumLattices.Prerequisites: Float,decimaltostr
 using QuantumLattices.Mathematics.AlgebraOverFields: ID,SimpleID
 import QuantumLattices.Interfaces: dimension,expand
-import QuantumLattices.Essentials.DegreesOfFreedom: twist,isHermitian,otype
+import QuantumLattices.Essentials.DegreesOfFreedom: isHermitian,otype
 import QuantumLattices.Essentials.Terms: couplingcenter,couplingcenters,abbr
 
 struct TID <: IID nambu::Int end
@@ -22,13 +22,6 @@ struct TIndex{S} <: Index{PID{S},TID}
 end
 Base.fieldnames(::Type{<:TIndex})=(:scope,:site,:nambu)
 Base.union(::Type{P},::Type{I}) where {P<:PID,I<:TID}=TIndex{fieldtype(P,:scope)}
-function twist(id::OID{<:TIndex},vectors::AbstractVector{<:AbstractVector{Float}},values::AbstractVector{Float})
-    phase=  length(vectors)==1 ? exp(2.0im*pi*dot(decompose(id.icoord,vectors[1]),values)) :
-            length(vectors)==2 ? exp(2.0im*pi*dot(decompose(id.icoord,vectors[1],vectors[2]),values)) :
-            length(vectors)==3 ? exp(2.0im*pi*dot(decompose(id.icoord,vectors[1],vectors[2],vectors[3]),values)) :
-            error("twist error: not supported number of input basis vectors.")
-    id.index.nambu==1 ? phase : conj(phase)
-end
 
 struct TFock <: Internal{TID} end
 dimension(f::TFock)=2
@@ -45,7 +38,7 @@ struct TCoupling{N,V<:Number,I<:ID{<:NTuple{N,TCID}}} <: Coupling{N,V,I}
     id::I
 end
 Base.repr(tc::TCoupling)=@sprintf "%s ph(%s)@(%s)" decimaltostr(tc.value) join(tc.id.nambus,',') join(tc.id.centers,',')
-function expand(tc::TCoupling,pids::NTuple{R,PID},focks::NTuple{R,TFock},species::Union{Val{S},Nothing}=nothing) where {R,S}
+function expand(tc::TCoupling,pids::NTuple{R,PID},focks::NTuple{R,TFock},kind::Union{Val{K},Nothing}=nothing) where {R,K}
     nambus=tc.id.nambus
     pids=NTuple{rank(tc),eltype(pids)}(pids[tc.id.centers[i]] for i=1:rank(tc))
     return ((tc.value,NTuple{rank(tc),TIndex{fieldtype(pids|>eltype,:scope)}}(TIndex(pids[i].scope,pids[i].site,nambus[i]) for i=1:rank(tc))),)
@@ -157,7 +150,7 @@ end
     config=IDFConfig{TFock}(pid->TFock(),[PID(1,1)])
     term=Term{'F',:TermMu,2}(:mu,1.5,0,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(1,1))),amplitude=(bond->3),modulate=false)
     @test term|>statistics==term|>typeof|>statistics=='F'
-    @test term|>species==term|>typeof|>species==:TermMu
+    @test term|>kind==term|>typeof|>kind==:TermMu
     @test term|>id==term|>typeof|>id==:mu
     @test term|>valtype==term|>typeof|>valtype==Float
     @test term|>rank==term|>typeof|>rank==2
@@ -165,7 +158,7 @@ end
     @test term|>isHermitian==term|>typeof|>isHermitian==true
     @test term==deepcopy(term)
     @test isequal(term,deepcopy(term))
-    @test string(term)=="TermMu{2F}(id=mu,value=1.5,neighbor=0,factor=1.0)"
+    @test string(term)=="TermMu{2F}(id=mu,value=1.5,bondkind=0,factor=1.0)"
     @test repr(term,point,config)=="tmu: 4.5 ph(2,1)@(1,1)"
     @test +term==term
     @test -term==term*(-1)==replace(term,factor=-term.factor)
@@ -204,12 +197,4 @@ end
     operators=Operators(TOperator(4.5,(TIndex('a',1,2),TIndex('b',2,1)),rcoords=(SVector(0.5,0.5),SVector(1.5,1.5)),icoords=(SVector(0.0,0.0),SVector(1.0,1.0)),seqs=(1,2)))
     @test expand(term,bond,config,table,true)==operators
     @test expand(term,bond,config,table,false)==operators+operators'
-end
-
-@testset "Boundary" begin
-    opt=TOperator(4.5,(TIndex('a',1,2),TIndex('b',2,1)),rcoords=(SVector(0.5,0.5),SVector(1.5,1.5)),icoords=(SVector(0.0,0.0),SVector(1.0,1.0)),seqs=(1,2))
-    bound=Boundary{(:θ₁,:θ₂)}([0.1,0.2],[[1.0,0.0],[0.0,1.0]],twist)
-    @test bound(opt)≈replace(opt,value=4.5*exp(2im*pi*0.3))
-    update!(bound,θ₁=0.3)
-    @test bound(opt)≈replace(opt,value=4.5*exp(2im*pi*0.5))
 end

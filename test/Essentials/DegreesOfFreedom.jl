@@ -5,8 +5,9 @@ using QuantumLattices.Prerequisites: Float
 using QuantumLattices.Essentials.DegreesOfFreedom
 using QuantumLattices.Essentials.Spatials: PID,Point,pidtype,rcoord,icoord
 using QuantumLattices.Mathematics.AlgebraOverFields: ID
-import QuantumLattices.Interfaces: dimension,decompose
+import QuantumLattices.Interfaces: dimension,decompose,update!
 import QuantumLattices.Essentials.DegreesOfFreedom: twist
+import QuantumLattices.Mathematics.AlgebraOverFields: rawelement
 
 struct DID <: IID nambu::Int end
 Base.adjoint(sl::DID)=DID(3-sl.nambu)
@@ -38,6 +39,7 @@ struct DOperator{N,V<:Number,I<:ID{<:NTuple{N,OID}}} <: Operator{N,V,I}
     id::I
     DOperator(value::Number,id::ID{<:NTuple{N,OID}}) where N=new{N,typeof(value),typeof(id)}(value,id)
 end
+rawelement(::Type{<:DOperator})=DOperator
 
 @testset "Index" begin
     index=DIndex(PID('S',4),DID(1))
@@ -110,11 +112,14 @@ end
     @test ID(oid',oid)'==ID(oid',oid)
     @test isHermitian(ID(oid',oid))==true
     @test isHermitian(ID(oid,oid))==false
-    @test oidtype(DID,Point{PID{Char},2},Nothing)==OID{DIndex{Char},SVector{2,Float},SVector{2,Float},Nothing}
-    @test oidtype(DID,Point{PID{Char},2},Table{DIndex{Char}})==OID{DIndex{Char},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(DID,Point{2,PID{Char}},Nothing)==OID{DIndex{Char},SVector{2,Float},SVector{2,Float},Nothing}
+    @test oidtype(DID,Point{2,PID{Char}},Table{DIndex{Char}})==OID{DIndex{Char},SVector{2,Float},SVector{2,Float},Int}
 end
 
 @testset "Operator" begin
+    @test rawelement(Operator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==Operator
+    @test rawelement(DOperator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==DOperator
+
     opt=DOperator(1.0im,(DIndex(1,2,2),DIndex(1,1,1)),rcoords=(SVector(1.0,0.0),SVector(0.0,0.0)),icoords=(SVector(2.0,0.0),SVector(0.0,0.0)),seqs=(2,1))
     @test opt'==DOperator(-1.0im,(DIndex(1,1,2),DIndex(1,2,1)),rcoords=(SVector(0.0,0.0),SVector(1.0,0.0)),icoords=(SVector(0.0,0.0),SVector(2.0,0.0)),seqs=(1,2))
     @test isHermitian(opt)==false
@@ -142,4 +147,12 @@ end
     @test opts'+opts==Operators(opt1,opt1',opt2*2)
     @test isHermitian(opts)==false
     @test isHermitian(opts'+opts)==true
+end
+
+@testset "Boundary" begin
+    opt=DOperator(4.5,(DIndex('a',1,2),DIndex('b',2,1)),rcoords=(SVector(0.5,0.5),SVector(1.5,1.5)),icoords=(SVector(0.0,0.0),SVector(1.0,1.0)),seqs=(1,2))
+    bound=Boundary{(:θ₁,:θ₂)}([0.1,0.2],[[1.0,0.0],[0.0,1.0]])
+    @test bound(opt)≈replace(opt,value=4.5*exp(2im*pi*0.3))
+    update!(bound,θ₁=0.3)
+    @test bound(opt)≈replace(opt,value=4.5*exp(2im*pi*0.5))
 end

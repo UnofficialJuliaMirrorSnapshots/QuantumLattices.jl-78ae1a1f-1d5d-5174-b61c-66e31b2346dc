@@ -1,12 +1,11 @@
 module FockPackage
 
-using StaticArrays: SVector
 using LinearAlgebra: dot
 using Printf: @printf,@sprintf
-using ..Spatials: PID,AbstractBond,Point,Bond,pidtype,decompose
+using ..Spatials: PID,AbstractBond,Bond,decompose
 using ..DegreesOfFreedom: IID,Index,Internal,FilteredAttributes,IDFConfig,Table,OID,Operator,Operators
 using ..Terms: wildcard,constant,Subscript,Subscripts,Coupling,Couplings,@subscript,couplingcenters,Term,TermCouplings,TermAmplitude,TermModulate
-using ...Interfaces: id,rank,dimension,add!
+using ...Interfaces: id,rank,kind
 using ...Prerequisites: Float,delta,decimaltostr
 using ...Mathematics.AlgebraOverFields: SimpleID,ID
 using ...Mathematics.VectorSpaces: VectorSpace,IsMultiIndexable,MultiIndexOrderStyle
@@ -14,8 +13,9 @@ using ...Mathematics.VectorSpaces: VectorSpace,IsMultiIndexable,MultiIndexOrderS
 import ..DegreesOfFreedom: twist,otype,isHermitian
 import ..Terms: couplingcenter,statistics,abbr,termfactor
 import ...Interfaces: dims,inds,⊗,⋅,expand,expand!
+import ...Mathematics.AlgebraOverFields: rawelement
 
-export ANNIHILATION,CREATION,FID,FIndex,Fock
+export ANNIHILATION,CREATION,MAJORANA,FID,FIndex,Fock
 export usualfockindextotuple,nambufockindextotuple
 export FockOperator,FOperator,BOperator,isnormalordered
 export FCID,FockCoupling
@@ -41,6 +41,13 @@ const ANNIHILATION=1
 Indicate that the nambu index is CREATION.
 """
 const CREATION=2
+
+"""
+    MAJORANA
+
+Indicate that the nambu index is MAJORANA.
+"""
+const MAJORANA=0
 
 """
     FID <: IID
@@ -187,6 +194,13 @@ statistics(opt::FOperator)=opt|>typeof|>statistics
 statistics(::Type{<:FOperator})='F'
 
 """
+    rawelement(::Type{<:FOperator})
+
+Get the raw name of a type of FOperator.
+"""
+rawelement(::Type{<:FOperator})=FOperator
+
+"""
     BOperator(value::Number,id::ID{<:NTuple{N,OID}}) where N
 
 Bosonic Fock operator.
@@ -205,6 +219,13 @@ Get the statistics of BOperator.
 """
 statistics(opt::BOperator)=opt|>typeof|>statistics
 statistics(::Type{<:BOperator})='B'
+
+"""
+    rawelement(::Type{<:BOperator})
+
+Get the raw name of a type of BOperator.
+"""
+rawelement(::Type{<:BOperator})=BOperator
 
 """
     FCID(;center=wildcard,atom=wildcard,orbital=wildcard,spin=wildcard,nambu=wildcard,obsub=wildcard,spsub=wildcard)
@@ -363,17 +384,17 @@ function ⋅(fc1::FockCoupling{2},fc2::FockCoupling{2})
 end
 
 """
-    expand(fc::FockCoupling,pid::PID,fock::Fock,species::Union{Val{S},Nothing}=nothing) where S -> Union{FCExpand,Tuple{}}
-    expand(fc::FockCoupling,pids::NTuple{R,PID},focks::NTuple{R,Fock},species::Union{Val{S},Nothing}=nothing) where {R,S} -> Union{FCExpand,Tuple{}}
+    expand(fc::FockCoupling,pid::PID,fock::Fock,kind::Union{Val{K},Nothing}=nothing) where K -> Union{FCExpand,Tuple{}}
+    expand(fc::FockCoupling,pids::NTuple{R,PID},focks::NTuple{R,Fock},kind::Union{Val{K},Nothing}=nothing) where {R,K} -> Union{FCExpand,Tuple{}}
 
 Expand a Fock coupling with the given set of point ids and Fock degrees of freedom.
 """
-expand(fc::FockCoupling,pid::PID,fock::Fock,species::Union{Val{S},Nothing}=nothing) where S=expand(fc,(pid,),(fock,),species)
-function expand(fc::FockCoupling,pids::NTuple{R,PID},focks::NTuple{R,Fock},species::Union{Val{S},Nothing}=nothing) where {R,S}
+expand(fc::FockCoupling,pid::PID,fock::Fock,kind::Union{Val{K},Nothing}=nothing) where K=expand(fc,(pid,),(fock,),kind)
+function expand(fc::FockCoupling,pids::NTuple{R,PID},focks::NTuple{R,Fock},kind::Union{Val{K},Nothing}=nothing) where {R,K}
     centers=couplingcenters(typeof(fc),fc.id.centers,Val(R))
     rpids=NTuple{rank(fc),eltype(pids)}(pids[centers[i]] for i=1:rank(fc))
     rfocks=NTuple{rank(fc),eltype(focks)}(focks[centers[i]] for i=1:rank(fc))
-    nambus=fockcouplingnambus(species,fc.id.nambus,NTuple{rank(fc),Int}(rfocks[i].nnambu for i=1:rank(fc)))
+    nambus=fockcouplingnambus(kind,fc.id.nambus,NTuple{rank(fc),Int}(rfocks[i].nnambu for i=1:rank(fc)))
     for (i,atom) in enumerate(fc.id.atoms)
        isa(atom,Int) && (atom≠rfocks[i].atom) && return ()
     end
@@ -382,7 +403,7 @@ function expand(fc::FockCoupling,pids::NTuple{R,PID},focks::NTuple{R,Fock},speci
     return FCExpand(fc.value,rpids,obsbexpands,spsbexpands,nambus)
 end
 couplingcenter(::Type{<:FockCoupling},i::Int,n::Int,::Val{2})=i<=n/2 ? 1 : 2
-@generated function fockcouplingnambus(::Union{Val{S},Nothing},nambus::NTuple{N,Any},ranges::NTuple{N,Int}) where {N,S}
+@generated function fockcouplingnambus(::Union{Val{K},Nothing},nambus::NTuple{N,Any},ranges::NTuple{N,Int}) where {N,K}
     exprs=[:(isa(nambus[$i],Int) ?
             ((ranges[$i]==1 && nambus[$i]==0) || (ranges[$i]==2 && 0<nambus[$i]<=2) ? nambus[$i] : error("fockcouplingnambus error: nambu out of range.")) :
             (ranges[$i]==1 ? 0 : ($i)%2==1 ? CREATION : ANNIHILATION)
@@ -500,8 +521,7 @@ abbr(::Type{<:Onsite})=:st
 isHermitian(::Type{<:Onsite})=nothing
 
 """
-    Hopping{ST}(id::Symbol,value::Number;
-                neighbor::Int=1,
+    Hopping{ST}(id::Symbol,value::Number,bondkind::Int=1;
                 couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                 amplitude::Union{Function,Nothing}=nothing,
                 modulate::Union{Function,Bool}=false,
@@ -512,22 +532,20 @@ Hopping term.
 Type alias for `Term{statistics,:Hopping,2,id,<:Number,Int,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
 """
 const Hopping{statistics,id,V<:Number,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{statistics,:Hopping,2,id,V,Int,C,A,M}
-function Hopping{ST}(id::Symbol,value::Number;
-                    neighbor::Int=1,
+function Hopping{ST}(id::Symbol,value::Number,bondkind::Int=1;
                     couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
                     ) where {ST}
     couplings=TermCouplings(couplings===nothing ? FockCoupling{2}() : couplings)
-    @assert neighbor≠0 "Hopping error: input neighbor cannot be 0. Use `Onsite` instead."
-    Term{ST,:Hopping,2}(id,value,neighbor,couplings=couplings,amplitude=amplitude,modulate=modulate)
+    @assert bondkind≠0 "Hopping error: input bondkind (neighbor) cannot be 0. Use `Onsite` instead."
+    Term{ST,:Hopping,2}(id,value,bondkind,couplings=couplings,amplitude=amplitude,modulate=modulate)
 end
 abbr(::Type{<:Hopping})=:hp
 isHermitian(::Type{<:Hopping})=false
 
 """
-    Pairing{ST}(id::Symbol,value::Number;
-                neighbor::Int=0,
+    Pairing{ST}(id::Symbol,value::Number,bondkind::Int=0;
                 couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                 amplitude::Union{Function,Nothing}=nothing,
                 modulate::Union{Function,Bool}=false,
@@ -538,14 +556,13 @@ Pairing term.
 Type alias for `Term{statistics,:Pairing,2,id,<:Number,Int,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
 """
 const Pairing{statistics,id,V<:Number,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{statistics,:Pairing,2,id,V,Int,C,A,M}
-function Pairing{ST}(id::Symbol,value::Number;
-                    neighbor::Int=0,
+function Pairing{ST}(id::Symbol,value::Number,bondkind::Int=0;
                     couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
                     ) where {ST}
     couplings=TermCouplings(couplings===nothing ? FockCoupling{2}() : couplings)
-    Term{ST,:Pairing,2}(id,value,neighbor,couplings=couplings,amplitude=amplitude,modulate=modulate)
+    Term{ST,:Pairing,2}(id,value,bondkind,couplings=couplings,amplitude=amplitude,modulate=modulate)
 end
 abbr(::Type{<:Pairing})=:pr
 isHermitian(::Type{<:Pairing})=false
@@ -668,8 +685,7 @@ abbr(::Type{<:PairHopping})=:ph
 isHermitian(::Type{<:PairHopping})=false
 
 """
-    Coulomb{ST}(    id::Symbol,value::Number;
-                    neighbor::Int=1,
+    Coulomb{ST}(    id::Symbol,value::Number,bondkind::Int=1;
                     couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
@@ -680,15 +696,14 @@ Coulomb term.
 Type alias for `Term{statistics,:Coulomb,4,id,<:Number,Int,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
 """
 const Coulomb{statistics,id,V<:Number,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{statistics,:Coulomb,4,id,V,Int,C,A,M}
-function Coulomb{ST}(   id::Symbol,value::Number;
-                        neighbor::Int=1,
+function Coulomb{ST}(   id::Symbol,value::Number,bondkind::Int=1;
                         couplings::Union{Function,Coupling,Couplings,Nothing}=nothing,
                         amplitude::Union{Function,Nothing}=nothing,
                         modulate::Union{Function,Bool}=false,
                         ) where {ST}
     couplings=TermCouplings(couplings===nothing ? FockCoupling{2}()*FockCoupling{2}() : couplings)
-    @assert neighbor≠0 "Coulomb error: input neighbor cannot be 0. Use `Hubbard/InterOrbitalInterSpin/InterOrbitalIntraSpin/SpinFlip/PairHopping` instead."
-    Term{ST,:Coulomb,4}(id,value,neighbor,couplings=couplings,amplitude=amplitude,modulate=modulate)
+    @assert bondkind≠0 "Coulomb error: input bondkind (neighbor) cannot be 0. Use `Hubbard/InterOrbitalInterSpin/InterOrbitalIntraSpin/SpinFlip/PairHopping` instead."
+    Term{ST,:Coulomb,4}(id,value,bondkind,couplings=couplings,amplitude=amplitude,modulate=modulate)
 end
 abbr(::Type{<:Coulomb})=:cl
 isHermitian(::Type{<:Coulomb})=nothing

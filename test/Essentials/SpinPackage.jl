@@ -6,7 +6,7 @@ using QuantumLattices.Essentials.DegreesOfFreedom: Table,OID,isHermitian,IDFConf
 using QuantumLattices.Essentials.Terms: Couplings,@subscript,statistics,abbr
 using QuantumLattices.Interfaces: dims,inds,expand,matrix
 using QuantumLattices.Prerequisites: Float
-using QuantumLattices.Mathematics.AlgebraOverFields: ID
+using QuantumLattices.Mathematics.AlgebraOverFields: ID,rawelement
 using QuantumLattices.Mathematics.VectorSpaces: IsMultiIndexable,MultiIndexOrderStyle
 
 @testset "SID" begin
@@ -16,18 +16,15 @@ using QuantumLattices.Mathematics.VectorSpaces: IsMultiIndexable,MultiIndexOrder
     @test SID(orbital=1,spin=0.5,tag='y')'==SID(orbital=1,spin=0.5,tag='y')
     @test SID(orbital=1,spin=0.5,tag='+')'==SID(orbital=1,spin=0.5,tag='-')
     @test SID(orbital=1,spin=0.5,tag='-')'==SID(orbital=1,spin=0.5,tag='+')
-    @test SID(orbital=1,spin=0.5,tag='i')'==SID(orbital=1,spin=0.5,tag='i')
 end
 
 @testset "matrix" begin
-    @test isapprox(matrix(SID(1,0.5,'i')),[[1.0,0.0] [0.0,1.0]])
     @test isapprox(matrix(SID(1,0.5,'z')),[[-0.5,0.0] [0.0,0.5]])
     @test isapprox(matrix(SID(1,0.5,'x')),[[0.0,0.5] [0.5,0.0]])
     @test isapprox(matrix(SID(1,0.5,'y')),[[0.0,-0.5im] [0.5im,0.0]])
     @test isapprox(matrix(SID(1,0.5,'+')),[[0.0,1.0] [0.0,0.0]])
     @test isapprox(matrix(SID(1,0.5,'-')),[[0.0,0.0] [1.0,0.0]])
 
-    @test isapprox(matrix(SID(1,1.0,'i')),[[1.0,0.0,0.0] [0.0,1.0,0.0] [0.0,0.0,1.0]])
     @test isapprox(matrix(SID(1,1.0,'z')),[[-1.0,0.0,0.0] [0.0,0.0,0.0] [0.0,0.0,1.0]])
     @test isapprox(matrix(SID(1,1.0,'x')),[[0.0,√2/2,0.0] [√2/2,0.0,√2/2] [0.0,√2/2,0.0]])
     @test isapprox(matrix(SID(1,1.0,'y')),[[0.0,-√2im/2,0.0] [√2im/2,0.0,-√2im/2] [0.0,√2im/2,0.0]])
@@ -39,11 +36,11 @@ end
     spin=Spin(atom=1,norbital=2,spin=1.0)
     @test IsMultiIndexable(Spin)==IsMultiIndexable(true)
     @test MultiIndexOrderStyle(Spin)==MultiIndexOrderStyle('C')
-    @test dims(spin)==(2,6)
-    @test inds(SID(1,1.0,'i'),spin)==(1,1)
-    @test SID((1,2),spin)==SID(1,1.0,'x')
-    @test spin|>collect==[  SID(1,1.0,'i'),SID(1,1.0,'x'),SID(1,1.0,'y'),SID(1,1.0,'z'),SID(1,1.0,'+'),SID(1,1.0,'-'),
-                            SID(2,1.0,'i'),SID(2,1.0,'x'),SID(2,1.0,'y'),SID(2,1.0,'z'),SID(2,1.0,'+'),SID(2,1.0,'-')
+    @test dims(spin)==(2,5)
+    @test inds(SID(1,1.0,'z'),spin)==(1,3)
+    @test SID((1,1),spin)==SID(1,1.0,'x')
+    @test spin|>collect==[  SID(1,1.0,'x'),SID(1,1.0,'y'),SID(1,1.0,'z'),SID(1,1.0,'+'),SID(1,1.0,'-'),
+                            SID(2,1.0,'x'),SID(2,1.0,'y'),SID(2,1.0,'z'),SID(2,1.0,'+'),SID(2,1.0,'-')
                             ]
 end
 
@@ -53,11 +50,12 @@ end
 end
 
 @testset "oidtype" begin
-    @test oidtype(SID,Point{PID{Int},2},Nothing)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
-    @test oidtype(SID,Point{PID{Int},2},Table)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(SID,Point{2,PID{Int}},Nothing)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
+    @test oidtype(SID,Point{2,PID{Int}},Table)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}
 end
 
 @testset "SOperator" begin
+    @test rawelement(SOperator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==SOperator
     opt=SOperator(1.0,(SIndex('a',1,1,0.5,'+'),SIndex('a',1,1,0.5,'-')))
     @test opt|>statistics==opt|>typeof|>statistics=='B'
     @test opt'==SOperator(1.0,(SIndex('a',1,1,0.5,'+'),SIndex('a',1,1,0.5,'-')))
@@ -112,15 +110,20 @@ end
     @test Ising('z',atoms=(1,2))==Couplings(SpinCoupling{2}(1.0,tags=('z','z'),atoms=(1,2)))
 end
 
+@testset "Gamma" begin
+    @test Gamma('x',orbitals=(1,1))==SpinCoupling{2}(1.0,tags=('y','z'),orbitals=(1,1))+SpinCoupling{2}(1.0,tags=('z','y'),orbitals=(1,1))
+    @test Gamma('y',atoms=(1,2))==SpinCoupling{2}(1.0,tags=('z','x'),atoms=(1,2))+SpinCoupling{2}(1.0,tags=('x','z'),atoms=(1,2))
+    @test Gamma('z')==SpinCoupling{2}(1.0,tags=('x','y'))+SpinCoupling{2}(1.0,tags=('y','x'))
+end
+
 @testset "Sᵅ" begin
-    @test S⁰()==Couplings(SpinCoupling{1}(1.0,tags=('i',)))
     @test Sˣ(atom=1,orbital=1)==Couplings(SpinCoupling{1}(1.0,tags=('x',),atoms=(1,),orbitals=(1,)))
     @test Sʸ(atom=1)==Couplings(SpinCoupling{1}(1.0,tags=('y',),atoms=(1,)))
     @test Sᶻ(orbital=1)==Couplings(SpinCoupling{1}(1.0,tags=('z',),orbitals=(1,)))
 end
 
 @testset "SpinTerm" begin
-    term=SpinTerm{1}(:h,1.5,neighbor=0,couplings=Sᶻ())
+    term=SpinTerm{1}(:h,1.5,0,couplings=Sᶻ())
     @test term|>abbr==:sp
     @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==SOperator{1,Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
     @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int})==SOperator{1,Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
@@ -128,7 +131,7 @@ end
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Spin}(pid->Spin(atom=pid.site%2,norbital=2,spin=0.5),[point.pid])
     table=Table(config,by=usualspinindextotuple)
-    term=SpinTerm{1}(:h,1.5,neighbor=0,couplings=Sᶻ())
+    term=SpinTerm{1}(:h,1.5,0,couplings=Sᶻ())
     operators=Operators(SOperator(1.5,ID(OID(SIndex('a',1,1,0.5,'z'),[0.5,0.5],[0.0,0.0],1))),
                         SOperator(1.5,ID(OID(SIndex('a',1,2,0.5,'z'),[0.5,0.5],[0.0,0.0],2)))
     )
@@ -137,7 +140,7 @@ end
     bond=Bond(1,Point(PID('a',1),(0.0,0.0),(0.0,0.0)),Point(PID('b',1),(0.5,0.5),(0.0,0.0)))
     config=IDFConfig{Spin}(pid->Spin(atom=pid.site%2,norbital=2,spin=0.5),[bond.spoint.pid,bond.epoint.pid])
     table=Table(config,by=usualspinindextotuple)
-    term=SpinTerm{2}(:J,1.5,neighbor=1,couplings=Heisenberg())
+    term=SpinTerm{2}(:J,1.5,1,couplings=Heisenberg())
     operators=Operators(SOperator(1.50,ID(OID(SIndex('b',1,2,0.5,'z'),[0.5,0.5],[0.0,0.0],4),OID(SIndex('a',1,2,0.5,'z'),[0.0,0.0],[0.0,0.0],2))),
                         SOperator(0.75,ID(OID(SIndex('b',1,2,0.5,'-'),[0.5,0.5],[0.0,0.0],4),OID(SIndex('a',1,2,0.5,'+'),[0.0,0.0],[0.0,0.0],2))),
                         SOperator(0.75,ID(OID(SIndex('b',1,1,0.5,'-'),[0.5,0.5],[0.0,0.0],3),OID(SIndex('a',1,1,0.5,'+'),[0.0,0.0],[0.0,0.0],1))),

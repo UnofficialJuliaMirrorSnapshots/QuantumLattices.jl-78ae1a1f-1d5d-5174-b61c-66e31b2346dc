@@ -2,9 +2,9 @@ using Test
 using StaticArrays: SVector
 using QuantumLattices.Essentials.FockPackage
 using QuantumLattices.Essentials.Spatials: Bond,Point,PID,rcoord,azimuthd
-using QuantumLattices.Essentials.DegreesOfFreedom: Table,IDFConfig,OID,Operators,twist,oidtype,otype,script,optdefaultlatex
+using QuantumLattices.Essentials.DegreesOfFreedom: Table,IDFConfig,OID,Operators,oidtype,otype,script,optdefaultlatex
 using QuantumLattices.Essentials.Terms: Couplings,@subscript,statistics,abbr
-using QuantumLattices.Interfaces: dims,inds,⊗,⋅,expand
+using QuantumLattices.Interfaces: dims,inds,⊗,⋅,expand,permute
 using QuantumLattices.Prerequisites: Float
 using QuantumLattices.Mathematics.VectorSpaces: IsMultiIndexable,MultiIndexOrderStyle
 using QuantumLattices.Mathematics.AlgebraOverFields: ID,rawelement
@@ -33,8 +33,8 @@ end
 @testset "FIndex" begin
     @test FIndex|>fieldnames==(:scope,:site,:orbital,:spin,:nambu)
     @test union(PID{Int},FID)==FIndex{Int}
-    @test twist(OID(FIndex(1,1,1,1,1),[0.0,0.0],[1.0,2.0],1),[[1.0,0.0],[0.0,1.0]],[0.1,0.0])≈exp(2im*pi*0.1)
-    @test twist(OID(FIndex(1,1,1,1,2),[0.0,0.0],[1.0,2.0],1),[[1.0,0.0],[0.0,1.0]],[0.0,0.2])≈exp(-2im*pi*0.4)
+    @test angle(OID(FIndex(1,1,1,1,1),[0.0,0.0],[1.0,2.0],1),[[1.0,0.0],[0.0,1.0]],[0.1,0.0])≈2pi*0.1
+    @test angle(OID(FIndex(1,1,1,1,2),[0.0,0.0],[1.0,2.0],1),[[1.0,0.0],[0.0,1.0]],[0.0,0.2])≈-2pi*0.4
 end
 
 @testset "script" begin
@@ -48,12 +48,14 @@ end
 end
 
 @testset "oidtype" begin
-    @test oidtype(FID,Point{2,PID{Int}},Nothing)==OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
-    @test oidtype(FID,Point{2,PID{Int}},Table)==OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(FID,Point{2,PID{Int}},Nothing,Val(true))==OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
+    @test oidtype(FID,Point{2,PID{Int}},Table,Val(true))==OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(FID,Point{2,PID{Int}},Nothing,Val(false))==OID{FIndex{Int},Nothing,Nothing,Nothing}
+    @test oidtype(FID,Point{2,PID{Int}},Table,Val(false))==OID{FIndex{Int},Nothing,Nothing,Int}
 end
 
 @testset "FockOperator" begin
-    @test rawelement(FOperator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==FOperator
+    @test rawelement(FOperator{V} where V)==FOperator
     @test optdefaultlatex(FOperator)==foptdefaultlatex
 
     opt=FOperator(1.0,(FIndex(1,1,1,1,2),FIndex(1,1,1,1,1)))
@@ -62,7 +64,7 @@ end
 
     opt=FOperator(1.0,(FIndex(1,2,1,1,2),FIndex(1,2,1,1,1),FIndex(1,1,1,2,2),FIndex(1,1,1,2,1)))
     @test opt|>isnormalordered==false
-    @test repr(opt)=="1.0c^{\\dagger}_{2,1,↓}c^{}_{2,1,↓}c^{\\dagger}_{1,1,↑}c^{}_{1,1,↑}"
+    @test repr(opt)=="c^{\\dagger}_{2,1,↓}c^{}_{2,1,↓}c^{\\dagger}_{1,1,↑}c^{}_{1,1,↑}"
 
     opt1=FOperator(1.5,(FIndex(1,2,1,1,2),FIndex(1,2,1,1,1)))
     opt2=FOperator(2.0,(FIndex(1,2,1,1,1),FIndex(1,2,1,1,2)))
@@ -72,12 +74,26 @@ end
     opt2=FOperator(2.0,(FIndex(1,2,1,1,2),FIndex(1,2,1,1,1)))
     @test opt1*opt2==FOperator(3.0,(FIndex(1,2,1,1,2),FIndex(1,2,1,1,1),FIndex(1,2,1,1,2),FIndex(1,2,1,1,1)))
 
-    @test rawelement(BOperator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==BOperator
+    @test rawelement(BOperator{V} where V)==BOperator
     @test optdefaultlatex(BOperator)==boptdefaultlatex
 
     opt=BOperator(1.0,(FIndex(1,1,1,1,2),FIndex(1,1,1,1,1)))
     @test opt|>statistics==opt|>typeof|>statistics=='B'
-    @test repr(opt)=="1.0b^{\\dagger}_{1,1,↓}b^{}_{1,1,↓}"
+    @test repr(opt)=="b^{\\dagger}_{1,1,↓}b^{}_{1,1,↓}"
+end
+
+@testset "permute" begin
+    i1,i2=OID(FIndex(1,1,1,1,2)),OID(FIndex(1,1,1,1,1))
+    @test permute(FOperator,i1,i2)==(FOperator(1,ID()),FOperator(-1,ID(i2,i1)))
+    @test permute(FOperator,i2,i1)==(FOperator(1,ID()),FOperator(-1,ID(i1,i2)))
+    @test permute(BOperator,i1,i2)==(BOperator(1,ID()),BOperator(1,ID(i2,i1)))
+    @test permute(BOperator,i2,i1)==(BOperator(-1,ID()),BOperator(1,ID(i1,i2)))
+
+    i1,i2=OID(FIndex(1,1,1,2,2)),OID(FIndex(1,1,1,1,1))
+    @test permute(FOperator,i1,i2)==(FOperator(-1,ID(i2,i1)),)
+    @test permute(FOperator,i2,i1)==(FOperator(-1,ID(i1,i2)),)
+    @test permute(BOperator,i1,i2)==(BOperator(1,ID(i2,i1)),)
+    @test permute(BOperator,i2,i1)==(BOperator(1,ID(i1,i2)),)
 end
 
 @testset "FCID" begin
@@ -85,6 +101,8 @@ end
 end
 
 @testset "FockCoupling" begin
+    @test rawelement(FockCoupling{V} where V)==FockCoupling
+
     @test FockCoupling{2}(1.0)|>string=="FockCoupling{2}(value=1.0)"
     @test FockCoupling{2}(1.0,atoms=(1,1))|>string=="FockCoupling{2}(value=1.0,atoms=(1,1))"
     @test FockCoupling{2}(1.0,atoms=(1,1),spins=(1,2))|>string=="FockCoupling{2}(value=1.0,atoms=(1,1),spins=(1,2))"
@@ -194,17 +212,17 @@ end
 @testset "Onsite" begin
     term=Onsite{'F'}(:mu,1.5)
     @test term|>abbr==:st
-    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==FOperator{2,Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
-    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int})==FOperator{2,Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
+    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==FOperator{Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
+    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int})==FOperator{Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
 
     term=Onsite{'B'}(:mu,1.5,couplings=σˣ("sp")⊗σᶻ("ob"),modulate=true)
     @test term|>abbr==:st
-    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==BOperator{2,Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
-    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int})==BOperator{2,Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
+    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==BOperator{Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
+    @test otype(term|>typeof,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int})==BOperator{Float,ID{NTuple{2,OID{FIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
 
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
 
     term=Onsite{'F'}(:mu,1.5,couplings=σˣ("sp")⊗σᶻ("ob"),modulate=true)
     operators=Operators(FOperator(+1.5,ID(OID(FIndex('a',1,2,2,2),[0.5,0.5],[0.0,0.0],4),OID(FIndex('a',1,2,1,1),[0.5,0.5],[0.0,0.0],3))),
@@ -231,7 +249,7 @@ end
 @testset "Hopping" begin
     bond=Bond(1,Point(PID('a',1),(0.5,0.5),(0.0,0.0)),Point(PID('b',2),(0.0,0.0),(0.0,0.0)))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[bond.spoint.pid,bond.epoint.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=Hopping{'F'}(:t,1.5,1)
     operators=Operators(FOperator(1.5,ID(OID(FIndex('b',2,2,2,2),[0.0,0.0],[0.0,0.0],8),OID(FIndex('a',1,2,2,1),[0.5,0.5],[0.0,0.0],4))),
                         FOperator(1.5,ID(OID(FIndex('b',2,2,1,2),[0.0,0.0],[0.0,0.0],7),OID(FIndex('a',1,2,1,1),[0.5,0.5],[0.0,0.0],3))),
@@ -246,7 +264,7 @@ end
 @testset "Pairing" begin
     bond=Bond(1,Point(PID('a',1),(0.5,0.5),(0.0,0.0)),Point(PID('b',2),(0.0,0.0),(0.0,0.0)))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=1,nspin=2,nnambu=2),[bond.spoint.pid,bond.epoint.pid])
-    table=Table(config,by=nambufockindextotuple)
+    table=Table(config,nambufockindextotuple)
     term=Pairing{'F'}(:Δ,1.5,1,couplings=FockCoupling{2}(spins=(2,2)),amplitude=bond->bond|>rcoord|>azimuthd≈45 ? 1 : -1)
     operators=Operators(FOperator(-1.5,ID(OID(FIndex('b',2,1,2,1),[0.0,0.0],[0.0,0.0],6),OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2))),
                         FOperator(+1.5,ID(OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2),OID(FIndex('b',2,1,2,1),[0.0,0.0],[0.0,0.0],6)))
@@ -257,7 +275,7 @@ end
 
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=1,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=nambufockindextotuple)
+    table=Table(config,nambufockindextotuple)
     term=Pairing{'F'}(:Δ,1.5,0,couplings=FockCoupling{2}(spins=(2,1))-FockCoupling{2}(spins=(1,2)))
     operators=Operators(FOperator(+1.5,ID(OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2),OID(FIndex('a',1,1,1,1),[0.5,0.5],[0.0,0.0],1))),
                         FOperator(-1.5,ID(OID(FIndex('a',1,1,1,1),[0.5,0.5],[0.0,0.0],1),OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2)))
@@ -270,7 +288,7 @@ end
 @testset "Hubbard" begin
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=Hubbard{'F'}(:H,2.5)
     operators=Operators(FOperator(1.25,ID(  OID(FIndex('a',1,1,2,2),[0.5,0.5],[0.0,0.0],2),OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2),
                                             OID(FIndex('a',1,1,1,2),[0.5,0.5],[0.0,0.0],1),OID(FIndex('a',1,1,1,1),[0.5,0.5],[0.0,0.0],1))),
@@ -285,7 +303,7 @@ end
 @testset "InterOrbitalInterSpin" begin
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=InterOrbitalInterSpin{'F'}(:H,2.5)
     operators=Operators(FOperator(1.25,ID(  OID(FIndex('a',1,1,2,2),[0.5,0.5],[0.0,0.0],2),OID(FIndex('a',1,1,2,1),[0.5,0.5],[0.0,0.0],2),
                                             OID(FIndex('a',1,2,1,2),[0.5,0.5],[0.0,0.0],3),OID(FIndex('a',1,2,1,1),[0.5,0.5],[0.0,0.0],3))),
@@ -300,7 +318,7 @@ end
 @testset "InterOrbitalIntraSpin" begin
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=InterOrbitalIntraSpin{'F'}(:H,2.5)
     operators=Operators(FOperator(1.25,ID(  OID(FIndex('a',1,1,1,2),[0.5,0.5],[0.0,0.0],1),OID(FIndex('a',1,1,1,1),[0.5,0.5],[0.0,0.0],1),
                                             OID(FIndex('a',1,2,1,2),[0.5,0.5],[0.0,0.0],3),OID(FIndex('a',1,2,1,1),[0.5,0.5],[0.0,0.0],3))),
@@ -315,7 +333,7 @@ end
 @testset "SpinFlip" begin
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=SpinFlip{'F'}(:H,2.5)
     operators=Operators(FOperator(2.5,ID(   OID(FIndex('a',1,1,2,2),[0.5,0.5],[0.0,0.0],2),OID(FIndex('a',1,2,1,2),[0.5,0.5],[0.0,0.0],3),
                                             OID(FIndex('a',1,1,1,1),[0.5,0.5],[0.0,0.0],1),OID(FIndex('a',1,2,2,1),[0.5,0.5],[0.0,0.0],4)))
@@ -328,7 +346,7 @@ end
 @testset "PairHopping" begin
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=2,nspin=2,nnambu=2),[point.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
     term=PairHopping{'F'}(:H,2.5)
     operators=Operators(FOperator(2.5,ID(   OID(FIndex('a',1,1,2,2),[0.5,0.5],[0.0,0.0],2),OID(FIndex('a',1,1,1,2),[0.5,0.5],[0.0,0.0],1),
                                             OID(FIndex('a',1,2,1,1),[0.5,0.5],[0.0,0.0],3),OID(FIndex('a',1,2,2,1),[0.5,0.5],[0.0,0.0],4)))
@@ -341,7 +359,7 @@ end
 @testset "Coulomb" begin
     bond=Bond(1,Point(PID('a',1),(0.5,0.5),(0.0,0.0)),Point(PID('b',2),(0.0,0.0),(0.0,0.0)))
     config=IDFConfig{Fock}(pid->Fock(atom=pid.site%2,norbital=1,nspin=2,nnambu=2),[bond.spoint.pid,bond.epoint.pid])
-    table=Table(config,by=usualfockindextotuple)
+    table=Table(config,usualfockindextotuple)
 
     term=Coulomb{'F'}(:V,2.5,1,couplings=σᶻ("sp")*σᶻ("sp"))
     operators=Operators(FOperator(-1.25,ID( OID(FIndex('b',2,1,1,2),[0.0,0.0],[0.0,0.0],3),OID(FIndex('b',2,1,1,1),[0.0,0.0],[0.0,0.0],3),

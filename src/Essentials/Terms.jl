@@ -2,21 +2,23 @@ module Terms
 
 using Printf: @printf,@sprintf
 using StaticArrays: SVector
-using ..Spatials: AbstractBond,pidtype
-using ..DegreesOfFreedom: Index,IDFConfig,Table,OID,Operators,oidtype,otype
+using ..Spatials: AbstractBond,pidtype,Bonds,AbstractLattice,acrossbonds
+using ..DegreesOfFreedom: Index,IDFConfig,Table,OID,Operators,oidtype,otype,Boundary,coordpresent,coordabsent
 using ...Interfaces: add!
 using ...Prerequisites: Float,atol,decimaltostr
 using ...Prerequisites.TypeTraits: efficientoperations,indtosub,corder
-using ...Prerequisites.CompositeStructures: CompositeTuple
+using ...Prerequisites.CompositeStructures: CompositeTuple,NamedContainer
 using ...Mathematics.AlgebraOverFields: SimpleID,ID,Element,Elements,idtype
 
 import ..DegreesOfFreedom: isHermitian
-import ...Interfaces: id,rank,kind,expand,expand!,dimension,update!
+import ...Mathematics.AlgebraOverFields: rawelement
+import ...Interfaces: id,rank,kind,expand,expand!,dimension,update!,reset!
 
 export Subscript,Subscripts,@subscript
 export Coupling,Couplings
 export TermFunction,TermAmplitude,TermCouplings,TermModulate
 export Term,statistics,abbr
+export Parameters,GenOperators,Generator
 
 const wildcard='*'
 const constant=':'
@@ -284,11 +286,11 @@ function Base.iterate(sbe::SbExpand,state::Int=1)
 end
 
 """
-    Coupling{N,V<:Number,I<:ID{<:NTuple{N,SimpleID}}} <: Element{N,V,I}
+    Coupling{V,I<:ID} <: Element{V,I}
 
 The coupling intra/inter interanl degrees of freedom at different lattice points.
 """
-abstract type Coupling{N,V<:Number,I<:ID{<:NTuple{N,SimpleID}}} <: Element{N,V,I} end
+abstract type Coupling{V,I<:ID} <: Element{V,I} end
 
 couplingcenter(::Type{<:Coupling},i::Int,n::Int,::Val{1})=1
 couplingcenter(::Type{<:Coupling},i::Int,n::Int,::Val{R}) where R=error("couplingcenter error: no default center for a rank-$R bond.")
@@ -298,11 +300,18 @@ couplingcenter(::Type{<:Coupling},i::Int,n::Int,::Val{R}) where R=error("couplin
 end
 
 """
-    Couplings{I<:ID,C<:Coupling} <: AbstractDict{I,C}
+    rawelement(::Type{<:Coupling})
+
+Get the raw name of a type of Coupling.
+"""
+rawelement(::Type{<:Coupling})=Coupling
+
+"""
+    Couplings(cps::Coupling...)
 
 A pack of couplings intra/inter interanl degrees of freedom at different lattice points.
 
-Alias for `Elements{I,C}`.
+Alias for `Elements{<:ID,<:Coupling}`.
 """
 const Couplings{I<:ID,C<:Coupling}=Elements{I,C}
 Couplings(cps::Coupling...)=Elements(cps...)
@@ -367,8 +376,8 @@ end
 (termmodulate::TermModulate{<:Function})(args...;kwargs...)=termmodulate.modulate(args...;kwargs...)
 
 """
-    Term{ST,K,R,I}(value::Number,bondkind::Any,couplings::TermCouplings,amplitude::TermAmplitude,modulate::Union{TermModulate,Nothing},factor::Number) where {ST,K,R,I}
-    Term{ST,K,R}(  id::Symbol,value::Number,bondkind::Any;
+    Term{ST,K,R,I}(value::Any,bondkind::Any,couplings::TermCouplings,amplitude::TermAmplitude,modulate::Union{TermModulate,Nothing},factor::Any) where {ST,K,R,I}
+    Term{ST,K,R}(  id::Symbol,value::Any,bondkind::Any;
                     couplings::Union{Function,Coupling,Couplings,TermCouplings},
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
@@ -376,21 +385,21 @@ end
 
 A term of a quantum lattice system.
 """
-mutable struct Term{statistics,kind,R,id,V<:Number,B<:Any,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}
+mutable struct Term{statistics,kind,R,id,V,B<:Any,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}
     value::V
     bondkind::B
     couplings::C
     amplitude::A
     modulate::M
     factor::V
-    function Term{ST,K,R,I}(value::Number,bondkind::Any,couplings::TermCouplings,amplitude::TermAmplitude,modulate::Union{TermModulate,Nothing},factor::Number) where {ST,K,R,I}
+    function Term{ST,K,R,I}(value::Any,bondkind::Any,couplings::TermCouplings,amplitude::TermAmplitude,modulate::Union{TermModulate,Nothing},factor::Any) where {ST,K,R,I}
         @assert ST in ('F','B') "Term error: statistics must be 'F' or 'B'."
         @assert isa(K,Symbol) "Term error: kind must be a Symbol."
         @assert isa(I,Symbol) "Term error: id must be a Symbol."
         new{ST,K,R,I,typeof(value),typeof(bondkind),typeof(couplings),typeof(amplitude),typeof(modulate)}(value,bondkind,couplings,amplitude,modulate,factor)
     end
 end
-function Term{ST,K,R}(  id::Symbol,value::Number,bondkind::Any;
+function Term{ST,K,R}(  id::Symbol,value::Any,bondkind::Any;
                         couplings::Union{Function,Coupling,Couplings,TermCouplings},
                         amplitude::Union{Function,Nothing}=nothing,
                         modulate::Union{Function,Bool}=false,
@@ -439,12 +448,12 @@ id(::Type{<:Term{ST,K,R,I} where {ST,K,R}}) where I=I
 
 """
     valtype(term::Term)
-    valtype(::Type{<:Term{ST,K,R,I,V} where {ST,K,R,I}}) where {V<:Number}
+    valtype(::Type{<:Term{ST,K,R,I,V} where {ST,K,R,I}}) where V
 
 Get the value type of a term.
 """
 Base.valtype(term::Term)=term|>typeof|>valtype
-Base.valtype(::Type{<:Term{ST,K,R,I,V} where {ST,K,R,I}}) where {V<:Number}=V
+Base.valtype(::Type{<:Term{ST,K,R,I,V} where {ST,K,R,I}}) where V=V
 
 """
     abbr(term::Term) -> Symbol
@@ -489,7 +498,7 @@ function Base.repr(term::Term,bond::AbstractBond,config::IDFConfig)
     cache=String[]
     if term.bondkind==bond|>kind
         value=term.value*term.amplitude(bond)*term.factor
-        if !isapprox(abs(value),0.0,atol=atol)
+        if abs(value)≠0
             pids=NTuple{length(bond),pidtype(bond)}(point.pid for point in bond)
             interanls=NTuple{length(bond),valtype(config)}(config[pid] for pid in pids)
             for coupling in values(term.couplings(bond))
@@ -513,17 +522,17 @@ end
 """
     +(term::Term) -> Term
     -(term::Term) -> Term
-    *(term::Term,factor::Number) -> Term
-    *(factor::Number,term::Term) -> Term
-    /(term::Term,factor::Number) -> Term
+    *(term::Term,factor) -> Term
+    *(factor,term::Term) -> Term
+    /(term::Term,factor) -> Term
 
 Allowed arithmetic operations for a term.
 """
 Base.:+(term::Term)=term
 Base.:-(term::Term)=term*(-1)
-Base.:*(term::Term,factor::Number)=factor*term
-Base.:*(factor::Number,term::Term)=replace(term,factor=factor*term.factor)
-Base.:/(term::Term,factor::Number)=term*(1/factor)
+Base.:*(term::Term,factor)=factor*term
+Base.:*(factor,term::Term)=replace(term,factor=factor*term.factor)
+Base.:/(term::Term,factor)=term*(1/factor)
 
 """
     one(term::Term) -> Term
@@ -540,45 +549,56 @@ Get a zero term.
 Base.zero(term::Term)=replace(term,value=zero(term.value))
 
 """
-    expand!(operators::Operators,term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false) -> Operators
+    expand!(operators::Operators,term::Term,bond::AbstractBond,config::IDFConfig,
+            table::Union{Table,Nothing}=nothing,
+            half::Bool=false,
+            coord::Union{Val{true},Val{false}}=coordpresent
+            ) -> Operators
+    expand!(operators::Operators,term::Term,bonds::Bonds,config::IDFConfig,
+            table::Union{Table,Nothing}=nothing,
+            half::Bool=false,
+            coord::Union{Val{true},Val{false}}=coordpresent
+            ) -> Operators
 
-Expand the operators of a term on a bond with a given config.
+Expand the operators of a term on a bond/set-of-bonds with a given config.
 
 The `half` parameter determines the behavior of generating operators, which falls into the following two categories
 * `true`: "Hermitian half" of the generated operators
 * `false`: "Hermitian whole" of the generated operators
 """
-function expand!(operators::Operators,term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false)
+function expand!(   operators::Operators,term::Term,bond::AbstractBond,config::IDFConfig,
+                    table::Union{Table,Nothing}=nothing,
+                    half::Bool=false,
+                    coord::Union{Val{true},Val{false}}=coordpresent
+                    )
     if term.bondkind==bond|>kind
         value=term.value*term.amplitude(bond)*term.factor
-        if !isapprox(abs(value),0.0,atol=atol)
-            otype,ktype=operators|>typeof|>valtype,operators|>typeof|>keytype
-            @assert (fieldtype(ktype|>eltype,:seq)===Nothing)==(table===nothing) "expand! error: `table` must be assigned if the sequences are required."
-            @assert rank(otype)==rank(term) "expand! error: dismatched ranks between operator and term."
+        if abs(value)≠0
             apriori=isHermitian(term)
-            record=apriori===nothing && length(operators)>0 ? Set{ktype}() : nothing
-            rtype,itype=fieldtype(ktype|>eltype,:rcoord),fieldtype(ktype|>eltype,:icoord)
+            ptype=otype(term|>typeof,oidtype(config|>typeof|>valtype|>eltype,bond|>typeof,table|>typeof,coord))
+            record=apriori===nothing && length(operators)>0 ? Set{ptype|>idtype}() : nothing
+            rtype,itype=fieldtype(ptype|>idtype|>eltype,:rcoord),fieldtype(ptype|>idtype|>eltype,:icoord)
             pids=NTuple{length(bond),pidtype(bond)}(point.pid for point in bond)
             rcoords=NTuple{length(bond),SVector{dimension(bond),Float}}(point.rcoord for point in bond)
             icoords=NTuple{length(bond),SVector{dimension(bond),Float}}(point.icoord for point in bond)
             interanls=NTuple{length(bond),valtype(config)}(config[pid] for pid in pids)
             for coupling in values(term.couplings(bond))
-                perm=couplingcenters(typeof(coupling),coupling.id.centers,Val(rank(bond)))::NTuple{rank(otype),Int}
+                perm=couplingcenters(typeof(coupling),coupling.id.centers,Val(rank(bond)))::NTuple{rank(ptype),Int}
                 orcoords,oicoords=termcoords(rtype,rcoords,perm),termcoords(itype,icoords,perm)
                 for (coeff,oindexes) in expand(coupling,pids,interanls,term|>kind|>Val) # needs improvement memory allocation 7 times for each fock coupling
-                    isa(table,Table) && any(NTuple{rank(otype),Bool}(!haskey(table,index) for index in oindexes)) && continue
+                    isa(table,Table) && any(NTuple{rank(ptype),Bool}(!haskey(table,index) for index in oindexes)) && continue
                     id=ID(OID,oindexes,orcoords,oicoords,termseqs(table,oindexes))
                     if apriori===true
-                        add!(operators,otype.name.wrapper(convert(otype|>valtype,value*coeff*(half ? 0.5 : 1.0)),id))
+                        add!(operators,ptype.name.wrapper(convert(ptype|>valtype,value*coeff/(half ? 2 : 1)),id))
                     elseif apriori==false
-                        opt=otype.name.wrapper(convert(otype|>valtype,value*coeff),id)
+                        opt=ptype.name.wrapper(convert(ptype|>valtype,value*coeff),id)
                         add!(operators,opt)
                         half || add!(operators,opt')
                     else
                         if !(record===nothing ? haskey(operators,id') : in(id',record))
                             record===nothing || push!(record,id)
-                            ovalue=valtype(otype)(value*coeff*termfactor(nothing,id,term|>kind|>Val)) # needs improvement memory allocation 2 times for each
-                            opt=otype.name.wrapper(ovalue,id)
+                            ovalue=valtype(ptype)(value*coeff/termfactor(nothing,id,term|>kind|>Val)) # needs improvement memory allocation 2 times for each
+                            opt=ptype.name.wrapper(ovalue,id)
                             add!(operators,opt)
                             half || add!(operators,opt')
                         end
@@ -589,20 +609,37 @@ function expand!(operators::Operators,term::Term,bond::AbstractBond,config::IDFC
     end
     return operators
 end
+@generated function expand!(operators::Operators,term::Term,bonds::Bonds,config::IDFConfig,
+                            table::Union{Table,Nothing}=nothing,
+                            half::Bool=false,
+                            coord::Union{Val{true},Val{false}}=coordpresent
+                            )
+    exprs=[]
+    for i=1:rank(bonds)
+        push!(exprs,:(for bond in bonds.bonds[$i] expand!(operators,term,bond,config,table,half,coord) end))
+    end
+    push!(exprs,:(return operators))
+    return Expr(:block,exprs...)
+end
 termcoords(::Type{<:Nothing},rcoords::NTuple{N,SVector{M,Float}},perm::NTuple{R,Int}) where {N,M,R}=NTuple{R,Nothing}(nothing for i=1:R)
 termcoords(::Type{<:SVector},rcoords::NTuple{N,SVector{M,Float}},perm::NTuple{R,Int}) where {N,M,R}=NTuple{R,SVector{M,Float}}(rcoords[p] for p in perm)
 termseqs(::Nothing,indexes::NTuple{N,<:Index}) where N=NTuple{N,Nothing}(nothing for i=1:N)
 @generated termseqs(table::Table{I},indexes::NTuple{N,I}) where {N,I<:Index}=Expr(:tuple,[:(table[indexes[$i]]) for i=1:N]...)
-termfactor(::Nothing,id::ID{<:NTuple{N,OID}},::Val{K}) where {N,K}=isHermitian(id) ? 0.5 : 1.0
+termfactor(::Nothing,id::ID{<:NTuple{N,OID}},::Val{K}) where {N,K}=isHermitian(id) ? 2 : 1
 
 """
-    expand(term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false) -> Operators
+    expand(term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false,coord::Union{Val{true},Val{false}}=coordpresent) -> Operators
+    expand(term::Term,bonds::Bonds,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false,coord::Union{Val{true},Val{false}}=coordpresent) -> Operators
 
-Expand the operators of a term on a bond with a given config.
+Expand the operators of a term on a bond/set-of-bonds with a given config.
 """
-function expand(term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false)
-    optype=otype(term|>typeof,oidtype(config|>typeof|>valtype|>eltype,bond|>typeof,table|>typeof))
-    expand!(Operators{idtype(optype),optype}(),term,bond,config,table,half)
+function expand(term::Term,bond::AbstractBond,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false,coord::Union{Val{true},Val{false}}=coordpresent)
+    optype=otype(term|>typeof,oidtype(config|>typeof|>valtype|>eltype,bond|>typeof,table|>typeof,coord))
+    expand!(Operators{idtype(optype),optype}(),term,bond,config,table,half,coord)
+end
+function expand(term::Term,bonds::Bonds,config::IDFConfig,table::Union{Table,Nothing}=nothing,half::Bool=false,coord::Union{Val{true},Val{false}}=coordpresent)
+    optype=otype(term|>typeof,oidtype(config|>typeof|>valtype|>eltype,bonds|>eltype,table|>typeof,coord))
+    expand!(Operators{idtype(optype),optype}(),term,bonds,config,table,half,coord)
 end
 
 """
@@ -610,6 +647,300 @@ end
 
 Update the value of a term by its `modulate` function.
 """
-update!(term::Term,args...;kwargs...)=(term.value=term.modulate(args...;kwargs...)::valtype(term);term)
+function update!(term::Term,args...;kwargs...)
+    value=term.modulate(args...;kwargs...)
+    value===nothing || (term.value=value)
+    return term
+end
+
+"""
+    Parameters{Names}(values::Number...) where Names
+
+A NamedTuple that contain the key-value pairs.
+"""
+const Parameters{Names}=NamedContainer{Number,Names}
+Parameters{Names}(values::Number...) where Names=NamedContainer{Names}(values...)
+
+"""
+    GenOperators(constops::Operators,alterops::NamedContainer{Operators},boundops::NamedContainer{Operators})
+
+A set of operators. This is the core of [`Generator`](@ref).
+"""
+struct GenOperators{S<:Operators,D<:NamedContainer{Operators},B<:NamedContainer{Operators}}
+    constops::S
+    alterops::D
+    boundops::B
+end
+
+"""
+    ==(genops1::GenOperators,genops2::GenOperators) -> Bool
+    isequal(genops1::GenOperators,genops2::GenOperators) -> Bool
+
+Judge whether two sets of operators are equivalent to each other.
+"""
+Base.:(==)(genops1::GenOperators,genops2::GenOperators) = ==(efficientoperations,genops1,genops2)
+Base.isequal(genops1::GenOperators,genops2::GenOperators) = isequal(efficientoperations,genops1,genops2)
+
+"""
+    eltype(ops::GenOperators)
+    eltype(::Type{<:GenOperators{S,D,B}}) where {S<:Operators,D<:NamedContainer{Operators},B<:NamedContainer{Operators}}
+
+Get the eltype of a set of operators, which is defined to be the common operator type of all operators it contains.
+"""
+Base.eltype(ops::GenOperators)=ops|>typeof|>eltype
+@generated function Base.eltype(::Type{<:GenOperators{S,D,B}}) where {S<:Operators,D<:NamedContainer{Operators},B<:NamedContainer{Operators}}
+    optp=S|>valtype
+    fieldcount(D)>0 && (optp=promote_type(optp,mapreduce(valtype,promote_type,fieldtypes(D))))
+    fieldcount(B)>0 && (optp=promote_type(optp,mapreduce(valtype,promote_type,fieldtypes(B))))
+    return optp
+end
+
+"""
+    empty!(ops::GenOperators) -> GenOperators
+
+Empty a set of operators.
+"""
+@generated function Base.empty!(ops::GenOperators)
+    exprs=[:(empty!(ops.constops))]
+    for i=1:fieldcount(fieldtype(ops,:alterops)) push!(exprs,:(empty!(ops.alterops[$i]))) end
+    for i=1:fieldcount(fieldtype(ops,:boundops)) push!(exprs,:(empty!(ops.boundops[$i]))) end
+    push!(exprs,:(return ops))
+    return Expr(:block,exprs...)
+end
+
+"""
+    empty(ops::GenOperators) -> GenOperators
+
+Get an empty copy of a set of operators.
+"""
+@generated function Base.empty(ops::GenOperators)
+    exprs=[:(constops=empty(ops.constops))]
+    alterops,boundops=[],[]
+    for i=1:fieldcount(fieldtype(ops,:alterops)) push!(alterops,:(empty(ops.alterops[$i]))) end
+    for i=1:fieldcount(fieldtype(ops,:boundops)) push!(boundops,:(empty(ops.boundops[$i]))) end
+    push!(exprs,quote
+        alterops=NamedContainer{fieldnames(fieldtype(ops|>typeof,:alterops))}($(alterops...))
+        boundops=NamedContainer{fieldnames(fieldtype(ops|>typeof,:boundops))}($(boundops...))
+        return GenOperators(constops,alterops,boundops)
+    end)
+    return Expr(:block,exprs...)
+end
+
+"""
+    expand!(operators::Operators,ops::GenOperators,boundary::Boundary;kwargs...) -> Operators
+
+Expand the operators with the given boundary twist and term coefficients.
+"""
+@generated function expand!(operators::Operators,ops::GenOperators,boundary::Boundary;kwargs...)
+    exprs=[:(add!(operators,ops.constops))]
+    for name in QuoteNode.(fieldnames(fieldtype(ops,:alterops)))
+        push!(exprs,:(value=get(kwargs,$name,nothing)))
+        push!(exprs,:(for opt in values(getfield(ops.alterops,$name)) add!(operators,opt*value) end))
+    end
+    for name in QuoteNode.(fieldnames(fieldtype(ops,:boundops)))
+        push!(exprs,:(value=get(kwargs,$name,nothing)))
+        push!(exprs,:(for opt in values(getfield(ops.boundops,$name)) add!(operators,boundary(opt)*value) end))
+    end
+    push!(exprs,:(return operators))
+    return Expr(:block,exprs...)
+end
+
+"""
+    Generator{coord}(   terms::Tuple{Vararg{Term}},bonds::Bonds,config::IDFConfig,
+                        table::Union{Nothing,Table}=nothing,
+                        half::Bool=true,
+                        boundary::Boundary=Boundary(),
+                        ) where coord
+
+A generator of operators based on terms, configuration of internal degrees of freedom, table of indices and boundary twist.
+"""
+struct Generator{coord,TS<:NamedContainer{Term},BS<:Bonds,C<:IDFConfig,T<:Union{Nothing,Table},B<:Boundary,OS<:GenOperators}
+    terms::TS
+    bonds::BS
+    config::C
+    table::T
+    half::Bool
+    boundary::B
+    operators::OS
+    function Generator{coord}(  terms::NamedContainer{Term},
+                                bonds::Bonds,
+                                config::IDFConfig,
+                                table::Union{Nothing,Table},
+                                half::Bool,
+                                boundary::Boundary,
+                                operators::GenOperators
+                                ) where coord
+        new{coord,typeof(terms),typeof(bonds),typeof(config),typeof(table),typeof(boundary),typeof(operators)}(terms,bonds,config,table,half,boundary,operators)
+    end
+end
+@generated function Generator{coord}(   terms::Tuple{Vararg{Term}},bonds::Bonds,config::IDFConfig,
+                                        table::Union{Nothing,Table}=nothing,
+                                        half::Bool=true,
+                                        boundary::Boundary=Boundary(),
+                                        ) where coord
+    @assert coord==coordpresent || coord==coordabsent "Generator error: not supported option."
+    constterms,alterterms=[],[]
+    for term in fieldtypes(terms)
+        fieldtype(term,:modulate)<:Nothing && push!(constterms,term)
+        fieldtype(term,:modulate)<:TermModulate && push!(alterterms,term)
+    end
+    names=NTuple{fieldcount(terms),Symbol}(id(term) for term in fieldtypes(terms))
+    alternames=NTuple{length(alterterms),Symbol}(id(term) for term in alterterms)
+    exprs,alterops,boundops=[],[],[]
+    push!(exprs,quote
+        oidtp=oidtype(config|>valtype|>eltype,bonds|>eltype,table|>typeof,coord)
+        choosedterms=length($constterms)>0 ? $constterms : $alterterms
+        constoptp=otype(choosedterms[1],oidtp)
+        for i=2:length(choosedterms) constoptp=promote_type(constoptp,otype(choosedterms[i],oidtp)) end
+        constops=Operators{idtype(constoptp),constoptp}()
+        innerbonds=filter(acrossbonds,bonds,Val(:exclude))
+        boundbonds=filter(acrossbonds,bonds,Val(:include))
+    end)
+    for i=1:fieldcount(terms)
+        push!(boundops,:(expand(one(terms[$i]),boundbonds,config,table,half,coord)))
+        if fieldtype(fieldtype(terms,i),:modulate)<:TermModulate
+            push!(alterops,:(expand(one(terms[$i]),innerbonds,config,table,half,coord)))
+        else
+            push!(exprs,:(expand!(constops,terms[$i],innerbonds,config,table,half,coord)))
+        end
+    end
+    push!(exprs,quote
+        terms=NamedContainer{$names}(terms...)
+        alterops=NamedContainer{$alternames}($(alterops...))
+        boundops=NamedContainer{$names}($(boundops...))
+        return Generator{coord}(terms,bonds,config,table,half,boundary,GenOperators(constops,alterops,boundops))
+    end)
+    return Expr(:block,exprs...)
+end
+
+"""
+    ==(gen1::Generator,gen2::Generator) -> Bool
+    isequal(gen1::Generator,gen2::Generator) -> Bool
+
+Judge whether generators are equivalent to each other.
+"""
+Base.:(==)(gen1::Generator,gen2::Generator) = ==(efficientoperations,gen1,gen2)
+Base.isequal(gen1::Generator,gen2::Generator) = isequal(efficientoperations,gen1,gen2)
+
+"""
+    Parameters(gen::Generator) -> Parameters
+
+Get the parameters of the terms of a generator.
+"""
+@generated function Parameters(gen::Generator)
+    names=fieldnames(fieldtype(gen,:terms))
+    values=[:(gen.terms[$i].value) for i=1:fieldcount(fieldtype(gen,:terms))]
+    return :(Parameters{$names}($(values...)))
+end
+
+"""
+    expand!(operators::Operators,gen::Generator) -> Operators
+
+Expand the operators of a generator.
+"""
+expand!(operators::Operators,gen::Generator)=expand!(operators,gen.operators,gen.boundary;Parameters(gen)...)
+
+"""
+    expand(gen::Generator) -> Operators
+    expand(gen::Generator{coord},name::Symbol) where coord -> Operators
+    expand(gen::Generator{coord},i::Int) where coord -> Operators
+    expand(gen::Generator{coord},name::Symbol,i::Int) where coord -> Operators
+
+Expand the operators of a generator:
+1) the total operators;
+2) the operators of a specific term;
+3) the operators on a specific bond;
+4) the operators of a specific term on a specific bond.
+"""
+function expand(gen::Generator)
+    expand!(Operators{idtype(eltype(gen.operators)),eltype(gen.operators)}(),gen)
+end
+function expand(gen::Generator{coord},name::Symbol) where coord
+    term=getfield(gen.terms,name)
+    optp=otype(term|>typeof,oidtype(gen.config|>valtype|>eltype,gen.bonds|>eltype,gen.table|>typeof,coord))
+    result=Operators{idtype(optp),optp}()
+    if fieldtype(term|>typeof,:modulate)<:TermModulate
+        for opt in getfield(gen.operators.alterops,name)|>values add!(result,opt*term.value) end
+        for opt in getfield(gen.operators.boundops,name)|>values add!(result,gen.boundary(opt)*term.value) end
+    else
+        expand!(result,term,gen.bonds,gen.config,gen.table,gen.half,coord)
+    end
+    return result
+end
+@generated function expand(gen::Generator{coord},i::Int) where coord
+    exprs=[:(result=Operators{idtype(eltype(gen.operators)),eltype(gen.operators)}())]
+    for i=1:fieldcount(fieldtype(gen,:terms))
+        push!(exprs,:(expand!(result,gen.terms[$i],gen.bonds[i],gen.config,gen.table,gen.half,coord)))
+    end
+    push!(exprs,:(return result))
+    return Expr(:block,exprs...)
+end
+function expand(gen::Generator{coord},name::Symbol,i::Int) where coord
+    expand(getfield(gen.terms,name),gen.bonds[i],gen.config,gen.table,gen.half,coord)
+end
+
+"""
+    empty!(gen::Generator) -> Generator
+
+Empty the :bonds, :config, :table and :operators of a generator.
+"""
+function Base.empty!(gen::Generator)
+    empty!(gen.bonds)
+    empty!(gen.config)
+    isa(gen.table,Table) && empty!(gen.table)
+    empty!(gen.operators)
+    return gen
+end
+
+"""
+    empty(gen::Generator{coord}) where coord -> Generator
+
+Get an empty copy of a generator.
+"""
+function Base.empty(gen::Generator{coord}) where coord
+    Generator{coord}(gen.terms,empty(gen.bonds),empty(gen.config),gen.table===nothing ? nothing : empty(gen.table),gen.half,gen.boundary,empty(gen.operators))
+end
+
+"""
+    reset!(gen::Generator{coord},lattice::AbstractLattice) where coord -> Generator
+
+Reset a generator by a new lattice.
+"""
+@generated function reset!(gen::Generator{coord},lattice::AbstractLattice) where coord
+    exprs=[]
+    push!(exprs,quote
+        reset!(gen.bonds,lattice)
+        reset!(gen.config,lattice.pids)
+        isa(gen.table,Table) && reset!(gen.table,gen.config)
+        empty!(gen.operators)
+        innerbonds=filter(acrossbonds,gen.bonds,Val(:exclude))
+        boundbonds=filter(acrossbonds,gen.bonds,Val(:include))
+    end)
+    for (i,term) in enumerate(fieldtypes(fieldtype(gen,:terms)))
+        name=QuoteNode(term|>id)
+        push!(exprs,:(expand!(getfield(gen.operators.boundops,$name),one(gen.terms[$i]),boundbonds,gen.config,gen.table,gen.half,coord)))
+        if fieldtype(term,:modulate)<:Nothing
+            push!(exprs,:(expand!(gen.operators.constops,gen.terms[$i],innerbonds,gen.config,gen.table,gen.half,coord)))
+        else
+            push!(exprs,:(expand!(getfield(gen.operators.alterops,$name),one(gen.terms[$i]),innerbonds,gen.config,gen.table,gen.half,coord)))
+        end
+    end
+    push!(exprs,:(return gen))
+    return Expr(:block,exprs...)
+end
+
+"""
+    update!(gen::Generator;kwargs...) -> Generator
+
+Update the coefficients of the terms in a generator.
+"""
+@generated function update!(gen::Generator;kwargs...)
+    exprs=[:(update!(gen.boundary;kwargs...))]
+    for i=1:fieldcount(fieldtype(gen,:terms))
+        fieldtype(fieldtype(fieldtype(gen,:terms),i),:modulate)<:TermModulate && push!(exprs,:(update!(gen.terms[$i];kwargs...)))
+    end
+    push!(exprs,:(return gen))
+    return Expr(:block,exprs...)
+end
 
 end  # module

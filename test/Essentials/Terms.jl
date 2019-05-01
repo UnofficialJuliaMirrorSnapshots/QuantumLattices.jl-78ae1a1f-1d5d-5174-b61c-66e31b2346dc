@@ -3,11 +3,12 @@ using Printf: @sprintf
 using LinearAlgebra: dot
 using StaticArrays: SVector
 using QuantumLattices.Essentials.Terms
-using QuantumLattices.Essentials.Spatials: Point,PID,Bond,decompose
-using QuantumLattices.Essentials.DegreesOfFreedom: IDFConfig,Table,IID,Index,Internal,FilteredAttributes,OID,Operator,Operators
-using QuantumLattices.Interfaces: rank,update!,id,kind
+using QuantumLattices.Essentials.Spatials: Point,PID,Bond,Bonds,Lattice,decompose,acrossbonds,zerothbonds
+using QuantumLattices.Essentials.DegreesOfFreedom: IDFConfig,Table,IID,Index,Internal,FilteredAttributes,OID,Operator,Operators,coordabsent,coordpresent,Boundary
+using QuantumLattices.Interfaces: rank,update!,expand!,id,kind,reset!
 using QuantumLattices.Prerequisites: Float,decimaltostr
-using QuantumLattices.Mathematics.AlgebraOverFields: ID,SimpleID
+using QuantumLattices.Prerequisites.CompositeStructures: NamedContainer
+using QuantumLattices.Mathematics.AlgebraOverFields: ID,SimpleID,rawelement,idtype
 import QuantumLattices.Interfaces: dimension,expand
 import QuantumLattices.Essentials.DegreesOfFreedom: isHermitian,otype
 import QuantumLattices.Essentials.Terms: couplingcenter,couplingcenters,abbr
@@ -33,7 +34,7 @@ struct TCID <: SimpleID
 end
 Base.fieldnames(::Type{<:TCID})=(:center,:nambu)
 
-struct TCoupling{N,V<:Number,I<:ID{<:NTuple{N,TCID}}} <: Coupling{N,V,I}
+struct TCoupling{V,I<:ID} <: Coupling{V,I}
     value::V
     id::I
 end
@@ -44,19 +45,18 @@ function expand(tc::TCoupling,pids::NTuple{R,PID},focks::NTuple{R,TFock},kind::U
     return ((tc.value,NTuple{rank(tc),TIndex{fieldtype(pids|>eltype,:scope)}}(TIndex(pids[i].scope,pids[i].site,nambus[i]) for i=1:rank(tc))),)
 end
 
-struct TOperator{N,V<:Number,I<:ID{<:NTuple{N,OID}}} <: Operator{N,V,I}
+struct TOperator{V,I<:ID} <: Operator{V,I}
     value::V
     id::I
-    TOperator(value::Number,id::ID{<:NTuple{N,OID}}) where N=new{N,typeof(value),typeof(id)}(value,id)
 end
 
-abbr(::Type{<:Term{ST,:TermMu}}) where ST=:tmu
-isHermitian(::Type{<:Term{ST,:TermMu}}) where ST=true
-otype(T::Type{<:Term{ST,:TermMu}},I::Type{<:OID}) where ST=TOperator{T|>rank,T|>valtype,ID{NTuple{T|>rank,I}}}
+abbr(::Type{<:Term{ST,:TermMu} where ST})=:tmu
+isHermitian(::Type{<:Term{ST,:TermMu} where ST})=true
+otype(T::Type{<:Term{ST,:TermMu} where ST},I::Type{<:OID})=TOperator{T|>valtype,ID{NTuple{T|>rank,I}}}
 
-abbr(::Type{<:Term{ST,:TermHopping}}) where ST=:thp
-isHermitian(::Type{<:Term{ST,:TermHopping}}) where ST=false
-otype(T::Type{<:Term{ST,:TermHopping}},I::Type{<:OID}) where ST=TOperator{T|>rank,T|>valtype,ID{NTuple{T|>rank,I}}}
+abbr(::Type{<:Term{ST,:TermHopping} where ST})=:thp
+isHermitian(::Type{<:Term{ST,:TermHopping} where ST})=false
+otype(T::Type{<:Term{ST,:TermHopping} where ST},I::Type{<:OID})=TOperator{T|>valtype,ID{NTuple{T|>rank,I}}}
 
 @testset "Subscript" begin
     sub=@subscript (x1,4,4,x2) with x1<x2
@@ -145,6 +145,10 @@ end
     @test termmodulate(2)==4
 end
 
+@testset "Coupling" begin
+    @test rawelement(Coupling{V} where V)==Coupling
+end
+
 @testset "Term" begin
     point=Point(PID(1,1),(0.0,0.0),(0.0,0.0))
     config=IDFConfig{TFock}(pid->TFock(),[PID(1,1)])
@@ -184,17 +188,60 @@ end
 @testset "expand" begin
     point=Point(PID(1,1),(0.0,0.0),(0.0,0.0))
     config=IDFConfig{TFock}(pid->TFock(),[PID(1,1)])
-    table=Table(config,by=filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
+    table=Table(config,filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
     term=Term{'F',:TermMu,2}(:mu,1.5,0,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(1,1))),amplitude=bond->3.0,modulate=true)
-    operators=Operators(TOperator(+2.25,(TIndex(1,1,2),TIndex(1,1,1)),rcoords=(SVector(0.0,0.0),SVector(0.0,0.0)),icoords=(SVector(0.0,0.0),SVector(0.0,0.0)),seqs=(1,1)))
-    @test expand(term,point,config,table,true)==operators
-    @test expand(term,point,config,table,false)==operators*2
+    operators=Operators(TOperator(+2.25,(TIndex(1,1,2),TIndex(1,1,1)),seqs=(1,1)))
+    @test expand(term,point,config,table,true,coordabsent)==operators
+    @test expand(term,point,config,table,false,coordabsent)==operators*2
 
     bond=Bond(1,Point(PID('b',2),(1.5,1.5),(1.0,1.0)),Point(PID('a',1),(0.5,0.5),(0.0,0.0)))
     config=IDFConfig{TFock}(pid->TFock(),[PID('a',1),PID('b',2)])
-    table=Table(config,by=filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
+    table=Table(config,filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
     term=Term{'F',:TermHopping,2}(:t,1.5,1,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(2,1))),amplitude=bond->3.0,modulate=true)
     operators=Operators(TOperator(4.5,(TIndex('a',1,2),TIndex('b',2,1)),rcoords=(SVector(0.5,0.5),SVector(1.5,1.5)),icoords=(SVector(0.0,0.0),SVector(1.0,1.0)),seqs=(1,2)))
     @test expand(term,bond,config,table,true)==operators
     @test expand(term,bond,config,table,false)==operators+operators'
+
+    lattice=Lattice("Tuanzi",[Point(PID(1,1),(0.0,0.0),(0.0,0.0))],vectors=[[1.0,0.0]],neighbors=1)
+    bonds=Bonds(lattice)
+    config=IDFConfig{TFock}(pid->TFock(),lattice.pids)
+    table=Table(config,filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
+    term=Term{'F',:TermMu,2}(:mu,1.5,0,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(1,1))),amplitude=bond->3.0,modulate=true)
+    operators=Operators(TOperator(+2.25,(TIndex(1,1,2),TIndex(1,1,1)),seqs=(1,1)))
+    @test expand(term,bonds,config,table,true,coordabsent)==operators
+    @test expand(term,bonds,config,table,false,coordabsent)==operators*2
+end
+
+@testset "Generator" begin
+    lattice=Lattice("Tuanzi",[Point(PID(1,1),(0.0,0.0),(0.0,0.0)),Point(PID(1,2),(0.5,0.0),(0.0,0.0))],vectors=[[1.0,0.0]],neighbors=1)
+    bonds=Bonds(lattice)
+    config=IDFConfig{TFock}(pid->TFock(),lattice.pids)
+    table=Table(config,filter(attr->attr≠:nambu,FilteredAttributes(TIndex)))
+    boundary=Boundary()
+    t=Term{'F',:TermHopping,2}(:t,2.0,1,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(2,1))))
+    μ=Term{'F',:TermMu,2}(:μ,1.0,0,couplings=TCoupling(1.0,ID(TCID(1,2),TCID(1,1))),modulate=true)
+    tops1=expand(t,filter(acrossbonds,bonds,Val(:exclude)),config,table,true,coordpresent)
+    tops2=expand(one(t),filter(acrossbonds,bonds,Val(:include)),config,table,true,coordpresent)
+    μops=expand(one(μ),filter(zerothbonds,bonds,Val(:include)),config,table,true,coordpresent)
+
+    optp=TOperator{Float,ID{NTuple{2,OID{TIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
+    genops=GenOperators(tops1,NamedContainer{(:μ,)}(μops),NamedContainer{(:t,)}(tops2))
+    @test genops==deepcopy(genops) && isequal(genops,deepcopy(genops))
+    @test genops|>eltype==genops|>typeof|>eltype==optp
+    @test expand!(Operators{idtype(optp),optp}(),genops,boundary,t=2.0,μ=1.5)==tops1+tops2*2.0+μops*1.5
+    @test empty!(deepcopy(genops))==empty(genops)==GenOperators(empty(μops),NamedContainer{(:μ,)}(empty(μops)),NamedContainer{(:t,)}(empty(μops)))
+
+    gen=Generator{coordpresent}((t,μ),bonds,config,table,true,boundary)
+    @test gen==deepcopy(gen) && isequal(gen,deepcopy(gen))
+    @test Parameters(gen)==Parameters{(:t,:μ)}(2.0,1.0)
+    @test expand!(Operators{idtype(optp),optp}(),gen)==expand(gen)==tops1+tops2*2.0+μops
+    @test expand(gen,:t)==tops1+tops2*2.0
+    @test expand(gen,:μ)==μops
+    @test expand(gen,1)+expand(gen,2)+expand(gen,3)+expand(gen,4)==expand(gen)
+    @test expand(gen,:μ,1)+expand(gen,:μ,2)==μops
+    @test expand(gen,:t,3)==tops1
+    @test expand(gen,:t,4)==tops2*2.0
+    @test empty!(deepcopy(gen))==Generator{coordpresent}((t,μ),empty(bonds),empty(config),empty(table),true,boundary)==empty(gen)
+    @test reset!(empty(gen),lattice)==gen
+    @test update!(gen,μ=1.5)|>expand==tops1+tops2*2.0+μops*1.5
 end

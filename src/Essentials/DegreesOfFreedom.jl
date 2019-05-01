@@ -5,18 +5,20 @@ using StaticArrays: SVector
 using ..Spatials: PID,AbstractBond
 using ...Interfaces: rank,dimension
 using ...Prerequisites: Float,decimaltostr
+using ...Prerequisites.TypeTraits: efficientoperations
 using ...Prerequisites.CompositeStructures: CompositeDict
 using ...Mathematics.VectorSpaces: VectorSpace
 using ...Mathematics.AlgebraOverFields: SimpleID,ID,Element,Elements
 
 import ..Spatials: pidtype,rcoord,icoord
-import ...Interfaces: update!
+import ...Interfaces: reset!,update!,sequence
 import ...Mathematics.AlgebraOverFields: rawelement
 
 export IID,Index,pid,iidtype,iid
 export IndexToTuple,DirectIndexToTuple,directindextotuple,FilteredAttributes
 export Internal,IDFConfig,Table
 export LaTeX,OID,Operator,Operators,isHermitian,twist
+export coordpresent,coordabsent
 export script,oidtype,otype,optdefaultlatex
 export Boundary
 
@@ -117,6 +119,8 @@ The rules for converting an index to a tuple.
 As a function, every instance should accept only one positional argument, i.e. the index to be converted to a tuple.
 """
 abstract type IndexToTuple <:Function end
+Base.:(==)(itt1::T,itt2::T) where T<:IndexToTuple = ==(efficientoperations,itt1,itt2)
+Base.isequal(itt1::T,itt2::T) where T<:IndexToTuple = isequal(efficientoperations,itt1,itt2)
 
 """
     DirectIndexToTuple
@@ -196,11 +200,11 @@ function IDFConfig{I}(map::Function,pids::Union{AbstractVector{<:PID},Tuple{}}=(
 end
 
 """
-    replace!(config::IDFConfig,pids::PID...) -> IDFConfig
+    reset!(config::IDFConfig,pids) -> IDFConfig
 
 Reset the idfconfig with new pids.
 """
-function Base.replace!(config::IDFConfig,pids::PID...)
+function reset!(config::IDFConfig,pids)
     empty!(config)
     for pid in pids
         config[pid]=config.map(pid)
@@ -209,23 +213,27 @@ function Base.replace!(config::IDFConfig,pids::PID...)
 end
 
 """
-    Table{I<:Index} <: AbstractDict{I,Int}
+    Table{I}(by::IndexToTuple) where I<:Index
 
-Index-sequence table. Alias for `Dict{I<:Index,Int}`.
+Index-sequence table.
 """
-const Table{I<:Index}=Dict{I,Int}
+struct Table{I<:Index,B<:IndexToTuple} <: CompositeDict{I,Int}
+    by::B
+    contents::Dict{I,Int}
+end
+Table{I}(by::IndexToTuple) where I<:Index=Table(by,Dict{I,Int}())
 
 """
-    Table(indices::AbstractVector{<:Index};by::IndexToTuple=directindextotuple) -> Table
+    Table(indices::AbstractVector{<:Index},by::IndexToTuple=directindextotuple) -> Table
 
 Convert an sequence of indices to the corresponding index-sequence table.
 
 The input indices will be converted to tuples by the `by` function with the duplicates removed. The resulting unique tuples are sorted, which determines the sequence of the input indices. Note that two indices have the same sequence if their converted tupels are equal to each other.
 """
-function Table(indices::AbstractVector{<:Index};by::IndexToTuple=directindextotuple)
+function Table(indices::AbstractVector{<:Index},by::IndexToTuple=directindextotuple)
     tuples=[by(index) for index in indices]
     permutation=sortperm(tuples,alg=Base.Sort.QuickSort)
-    result=Table{indices|>eltype}()
+    result=Table{indices|>eltype}(by)
     count=1
     for i=1:length(tuples)
         i>1 && tuples[permutation[i]]!=tuples[permutation[i-1]] && (count+=1)
@@ -235,35 +243,36 @@ function Table(indices::AbstractVector{<:Index};by::IndexToTuple=directindextotu
 end
 
 """
-    Table(config::IDFConfig;by::IndexToTuple=directindextotuple) -> Table
+    Table(config::IDFConfig,by::IndexToTuple=directindextotuple) -> Table
 
 Get the index-sequence table of the whole internal Hilbert spaces at a lattice.
 """
-function Table(config::IDFConfig;by::IndexToTuple=directindextotuple)
+function Table(config::IDFConfig,by::IndexToTuple=directindextotuple)
     result=union(config|>keytype,config|>valtype|>eltype)[]
     for (pid,internal) in config
         for iid in internal
             push!(result,(result|>eltype)(pid,iid))
         end
     end
-    Table(result,by=by)
+    Table(result,by)
 end
 
 """
-    union(tables::Table...;by::IndexToTuple=directindextotuple) -> Table
+    union(tables::Table...) -> Table
 
 Unite several index-sequence tables.
 
 See [`Table`](@ref) for more details.
 """
-function Base.union(tables::Table...;by::IndexToTuple=directindextotuple)
+function Base.union(tables::Table...)
+    @assert mapreduce(table->table.by,==,tables)
     indices=(tables|>eltype|>keytype)[]
     for table in tables
         for index in keys(table)
             push!(indices,index)
         end
     end
-    Table(indices,by=by)
+    Table(indices,tables[1].by)
 end
 
 """
@@ -280,6 +289,33 @@ function Base.reverse(table::Table)
         push!(result[seq],index)
     end
     result
+end
+
+"""
+    reset!(table::Table,indices::AbstractVector{<:Index}) -> Table
+    reset!(table::Table,config::IDFConfig) -> Table
+
+Reset a table.
+"""
+function reset!(table::Table,indices::AbstractVector{<:Index})
+    empty!(table)
+    tuples=[table.by(index) for index in indices]
+    permutation=sortperm(tuples,alg=Base.Sort.QuickSort)
+    count=1
+    for i=1:length(tuples)
+        i>1 && tuples[permutation[i]]!=tuples[permutation[i-1]] && (count+=1)
+        table[indices[permutation[i]]]=count
+    end
+    table
+end
+function reset!(table::Table,config::IDFConfig)
+    indices=union(config|>keytype,config|>valtype|>eltype)[]
+    for (pid,internal) in config
+        for iid in internal
+            push!(indices,(indices|>eltype)(pid,iid))
+        end
+    end
+    reset!(table,indices)
 end
 
 """
@@ -328,7 +364,7 @@ totuple(::Nothing)=nothing
 @generated totuple(v::SVector{N}) where N=Expr(:tuple,[:(v[$i]) for i=1:N]...)
 Base.hash(oid::OID{<:Index},h::UInt)=hash((oid.index,totuple(oid.rcoord)),h)
 Base.fieldnames(::Type{<:OID})=(:index,:rcoord,:icoord,:seq)
-Base.propertynames(::Type{<:ID{<:NTuple{N,OID}}},private::Bool=false) where N=private ? (:contents,:indexes,:rcoords,:icoords) : (:indexes,:rcoords,:icoords)
+Base.propertynames(::Type{<:ID{<:NTuple{N,OID}}},private::Bool=false) where N=private ? (:contents,:indexes,:rcoords,:icoords,:seqs) : (:indexes,:rcoords,:icoords,:seqs)
 
 """
     show(io::IO,oid::OID)
@@ -392,21 +428,48 @@ Get the body/superscript/subscript of the latex string representation of an oid.
 @generated script(oid::OID,l::LaTeX,::Val{:SB})=Expr(:tuple,[:(script(oid,Val($sub))) for sub in QuoteNode.(l|>latexsubscript)]...)
 
 """
-    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing})
-    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table})
+    coordpresent
+
+Indicate that the `:icoord` and `:rcoord` attributes in an oid should not be nothing.
+"""
+const coordpresent=Val(true)
+
+"""
+    coordabsent
+
+Indicate that the `:icoord` and `:rcoord` attributes in an oid should be nothing
+"""
+const coordabsent=Val(false)
+
+"""
+    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing},::Val{true})
+    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table},::Val{true})
+    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing},::Val{false})
+    oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table},::Val{false})
 
 Get the compatible oid type.
 """
-oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing})=OID{union(B|>pidtype,I),SVector{B|>dimension,Float},SVector{B|>dimension,Float},Nothing}
-oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table})=OID{union(B|>pidtype,I),SVector{B|>dimension,Float},SVector{B|>dimension,Float},Int}
+oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing},::Val{true})=OID{union(B|>pidtype,I),SVector{B|>dimension,Float},SVector{B|>dimension,Float},Nothing}
+oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table},::Val{true})=OID{union(B|>pidtype,I),SVector{B|>dimension,Float},SVector{B|>dimension,Float},Int}
+oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{Nothing},::Val{false})=OID{union(B|>pidtype,I),Nothing,Nothing,Nothing}
+oidtype(I::Type{<:IID},B::Type{<:AbstractBond},::Type{<:Table},::Val{false})=OID{union(B|>pidtype,I),Nothing,Nothing,Int}
 
 """
-    Operator{N,V<:Number,I<:ID{<:NTuple{N,OID}}} <: Element{N,V,I}
+    angle(id::ID{<:Tuple{Vararg{OID}}},vectors::AbstractVector{<:AbstractVector{Float}},values::AbstractVector{Float}) -> Float
+
+Get the total twist phase of an id.
+"""
+@generated function Base.angle(id::ID{<:Tuple{Vararg{OID}}},vectors::AbstractVector{<:AbstractVector{Float}},values::AbstractVector{Float})
+    Expr(:call,:+,[:(angle(id[$i],vectors,values)) for i=1:rank(id)]...)
+end
+
+"""
+    Operator{V,I<:ID} <: Element{V,I}
 
 Abstract type for an operator.
 """
-abstract type Operator{N,V<:Number,I<:ID{<:NTuple{N,OID}}} <: Element{N,V,I} end
-function (O::Type{<:Operator})( value::Number,
+abstract type Operator{V,I<:ID} <: Element{V,I} end
+function (O::Type{<:Operator})( value,
                                 indexes::NTuple{N,Index};
                                 rcoords::Union{Nothing,NTuple{N,SVector{M,Float}}}=nothing,
                                 icoords::Union{Nothing,NTuple{N,SVector{M,Float}}}=nothing,
@@ -446,8 +509,25 @@ Get the latex string representation of an operator.
 """
 Base.repr(opt::Operator,::Nothing=nothing)=repr(opt,opt|>typeof|>optdefaultlatex)
 @generated function Base.repr(opt::Operator,l::LaTeX)
-    expr=Expr(:tuple,:(decimaltostr(opt.value)),[:(repr(opt.id[$i],l)) for i=1:rank(opt)]...)
+    rank(opt)==0 && return :(replace(valuetolatextext(opt.value)," "=>""))
+    expr=Expr(:tuple,:(valuetostr(opt.value)),[:(repr(opt.id[$i],l)) for i=1:rank(opt)]...)
     return :(join($expr,""))
+end
+function valuetostr(v)
+    v==1 && return ""
+    v==-1 && return "-"
+    result=valuetolatextext(v)
+    if occursin(" ",result) || (isa(v,Complex) && real(v)≠0 && imag(v)≠0)
+        bra,ket=occursin("(",result) ? ("[","]") : ("(",")")
+        result=@sprintf "%s%s%s" bra replace(result," "=>"") ket
+    end
+    return result
+end
+valuetolatextext(value::Union{Real,Complex})=decimaltostr(value)
+function valuetolatextext(value)
+    io=IOBuffer()
+    showable(MIME"text/latex"(),value) ? show(IOContext(io,:limit=>false),MIME"text/latex"(),value) : show(IOContext(io,:limit=>false),MIME"text/plain"(),value)
+    return replace(replace(String(take!(io)),"\\begin{equation*}"=>""),"\\end{equation*}"=>"")
 end
 
 """
@@ -458,22 +538,26 @@ Judge whether an operator is Hermitian.
 isHermitian(opt::Operator)=isa(opt.value,Real) && isHermitian(opt.id)
 
 """
-    rcoord(opt::Operator{1}) -> SVector
-    rcoord(opt::Operator{2}) -> SVector
+    rcoord(opt::Operator) -> SVector
 
 Get the whole rcoord of an operator.
 """
-rcoord(opt::Operator{1})=opt.id[1].rcoord
-rcoord(opt::Operator{2})=opt.id[1].rcoord-opt.id[2].rcoord
+@generated function rcoord(opt::Operator)
+    rank(opt)==1 && return :(opt.id[1].rcoord)
+    rank(opt)==2 && return :(opt.id[1].rcoord-opt.id[2].rcoord)
+    error("rcoord error: not supported rank($(rank(opt))) of $(nameof(opt)).")
+end
 
 """
-    icoord(opt::Operator{1}) -> SVector
-    icoord(opt::Operator{2}) -> SVector
+    icoord(opt::Operator) -> SVector
 
 Get the whole icoord of an operator.
 """
-icoord(opt::Operator{1})=opt.id[1].icoord
-icoord(opt::Operator{2})=opt.id[1].icoord-opt.id[2].icoord
+@generated function icoord(opt::Operator)
+    rank(opt)==1 && return :(opt.id[1].icoord)
+    rank(opt)==2 && return :(opt.id[1].icoord-opt.id[2].icoord)
+    error("icoord error: not supported rank($(rank(opt))) of $(nameof(opt)).")
+end
 
 """
     rawelement(::Type{<:Operator})
@@ -481,6 +565,16 @@ icoord(opt::Operator{2})=opt.id[1].icoord-opt.id[2].icoord
 Get the raw name of a type of Operator.
 """
 rawelement(::Type{<:Operator})=Operator
+
+"""
+    sequence(opt::Operator,table=nothing) -> NTuple{rank(opt),Int}
+
+Get the sequence of the oids of an operator according to a table.
+"""
+@generated function sequence(opt::Operator,table=nothing)
+    table<:Nothing && return :(opt.id.seqs::NTuple{rank(opt),Int})
+    return Expr(:tuple,[:(get(table,opt.id[$i].index,nothing)) for i=1:rank(opt)]...)
+end
 
 """
     otype
@@ -494,7 +588,7 @@ function otype end
 
 A set of operators.
 
-Type alias of `Operators{I<:ID,O<:Operator}=Elements{I,O}`.
+Type alias for `Elements{<:ID,<:Operator}`.
 """
 const Operators{I<:ID,O<:Operator}=Elements{I,O}
 Operators(opts::Operator...)=Elements(opts...)
@@ -541,15 +635,12 @@ isHermitian(opts::Operators)=opts==opts'
 Twist an operator.
 """
 function twist(operator::Operator,vectors::AbstractVector{<:AbstractVector{Float}},values::AbstractVector{Float})
-    phase=one(operator.value)
-    for i=1:rank(operator)
-        phase=phase*twist(operator.id[i],vectors,values)
-    end
-    return replace(operator,value=operator.value*phase)
+    replace(operator,value=operator.value*exp(1im*angle(operator.id,vectors,values)))
 end
 
 """
     Boundary{Names}(values::AbstractVector{Float},vectors::AbstractVector{<:AbstractVector{Float}}) where Names
+    Boundary()
 
 Boundary twist of operators.
 """
@@ -561,13 +652,34 @@ struct Boundary{Names,V<:AbstractVector{Float}}
         new{Names,eltype(vectors)}(convert(Vector{Float},values),vectors)
     end
 end
+const boundaryemptyvalues=Float[]
+const boundaryemptyvectors=SVector{0,Float}[]
+Boundary()=Boundary{()}(boundaryemptyvalues,boundaryemptyvectors)
+
+"""
+    ==(bound1::Boundary,bound2::Boundary) -> Bool
+    isequal(bound1::Boundary,bound2::Boundary) -> Bool
+"""
+Base.:(==)(bound1::Boundary,bound2::Boundary) = ==(efficientoperations,bound1,bound2)
+Base.isequal(bound1::Boundary,bound2::Boundary)=isequal(efficientoperations,bound1,bound2)
 
 """
     (bound::Boundary)(operator::Operator) -> Operator
+    (bound::Boundary{()})(operator::Operator) -> Operator
 
 Get the boundary twisted operator.
 """
 (bound::Boundary)(operator::Operator)=twist(operator,bound.vectors,bound.values)
+(bound::Boundary{()})(operator::Operator)=operator
+
+"""
+    angle(bound::Boundary,operator::Operator) -> Float
+    angle(bound::Boundary{()},operator::Operator) -> Int
+
+Get the boundary twist phase of an operator.
+"""
+Base.angle(bound::Boundary,operator::Operator)=angle(operator.id,bound.vectors,bound.values)
+Base.angle(bound::Boundary{()},operator::Operator)=0
 
 """
     update!(bound::Boundary{Names},args...;kwargs...) where Names -> Boundary

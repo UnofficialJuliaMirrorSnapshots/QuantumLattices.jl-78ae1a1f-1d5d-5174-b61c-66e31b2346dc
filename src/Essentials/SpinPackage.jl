@@ -11,13 +11,14 @@ using ...Mathematics.AlgebraOverFields: SimpleID,ID
 
 import ..DegreesOfFreedom: script,otype,isHermitian,optdefaultlatex
 import ..Terms: couplingcenter,statistics,abbr
-import ...Interfaces: dims,inds,expand,matrix
+import ...Interfaces: dims,inds,expand,matrix,permute
 import ...Mathematics.AlgebraOverFields: rawelement
 
-export SID,Spin,SIndex,usualspinindextotuple
+export SID,Spin,SIndex
+export usualspinindextotuple
 export SOperator,soptdefaultlatex
 export SCID,SpinCoupling
-export Heisenberg,Ising,Gamma,Sˣ,Sʸ,Sᶻ
+export Heisenberg,Ising,Gamma,DM,Sˣ,Sʸ,Sᶻ
 export SpinTerm
 
 const sidtagmap=Dict(1=>'x',2=>'y',3=>'z',4=>'+',5=>'-')
@@ -139,14 +140,14 @@ Indicate that the filtered attributes are `(:scope,:site,:orbital)` when convert
 const usualspinindextotuple=FilteredAttributes(:scope,:site,:orbital)
 
 """
-    SOperator(value::Number,id::ID{<:NTuple{N,OID}}) where N
+    SOperator(value,id::ID{<:Tuple{Vararg{OID}}}=ID())
 
 Spin operator.
 """
-struct SOperator{N,V<:Number,I<:ID{<:NTuple{N,OID}}} <: Operator{N,V,I}
+struct SOperator{V,I<:ID} <: Operator{V,I}
     value::V
     id::I
-    SOperator(value::Number,id::ID{<:NTuple{N,OID}}) where N=new{N,typeof(value),typeof(id)}(value,id)
+    SOperator(value,id::ID{<:Tuple{Vararg{OID}}}=ID())=new{typeof(value),typeof(id)}(value,id)
 end
 
 """
@@ -180,6 +181,53 @@ Get the default LaTeX pattern of the oids of a spin operator.
 optdefaultlatex(::Type{<:SOperator})=soptdefaultlatex
 
 """
+    permute(::Type{<:SOperator},id1::OID{<:SIndex},id2::OID{<:SIndex},table) -> Tuple{Vararg{SOperator}}
+
+Permute two fermionic oid and get the result.
+"""
+function permute(::Type{<:SOperator},id1::OID{<:SIndex},id2::OID{<:SIndex},table)
+    @assert id1.index≠id2.index || id1.rcoord≠id2.rcoord || id1.icoord≠id2.icoord "permute error: permuted ids should not be equal to each other."
+    if usualspinindextotuple(id1.index)==usualspinindextotuple(id2.index) && id1.rcoord==id2.rcoord && id1.icoord==id2.icoord
+        @assert id1.index.spin==id2.index.spin "permute error: noncommutable ids should have the same spin attribute."
+        if id1.index.tag=='x'
+            id2.index.tag=='y' && return (SOperator(+1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='z' && return (SOperator(-1im,ID(permutesoid(id1,'y',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='+' && return (SOperator(-1,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='-' && return (SOperator(+1,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+        elseif id1.index.tag=='y'
+            id2.index.tag=='x' && return (SOperator(-1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='z' && return (SOperator(+1im,ID(permutesoid(id1,'x',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='+' && return (SOperator(-1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='-' && return (SOperator(-1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+        elseif id1.index.tag=='z'
+            id2.index.tag=='x' && return (SOperator(+1im,ID(permutesoid(id1,'y',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='y' && return (SOperator(-1im,ID(permutesoid(id1,'x',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='+' && return (SOperator(+1,ID(id2)),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='-' && return (SOperator(-1,ID(id2)),SOperator(1,ID(id2,id1)))
+        elseif id1.index.tag=='+'
+            id2.index.tag=='x' && return (SOperator(+1,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='y' && return (SOperator(+1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='z' && return (SOperator(-1,ID(id1)),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='-' && return (SOperator(+2,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+        elseif id1.index.tag=='-'
+            id2.index.tag=='x' && return (SOperator(-1,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='y' && return (SOperator(1im,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='z' && return (SOperator(+1,ID(id1)),SOperator(1,ID(id2,id1)))
+            id2.index.tag=='+' && return (SOperator(-2,ID(permutesoid(id1,'z',table))),SOperator(1,ID(id2,id1)))
+        end
+    else
+        return (SOperator(1,ID(id2,id1)),)
+    end
+end
+function permutesoid(id::OID{<:SIndex},tag::Char,table)
+    index=replace(id.index,tag=tag)
+    fieldtype(id|>typeof,:seq)<:Nothing && return replace(id,index=index)
+    seq=get(table,index,nothing)
+    seq===nothing && error("permutesoid error: incomplete index-sequence table with $index not found.")
+    return replace(id,index=index,seq=seq)
+end
+
+"""
     SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='z',subscript=wildcard)=SCID(center,atom,orbital,tag,subscript)
 
 The id of a spin coupling.
@@ -199,8 +247,8 @@ SCID(;center=wildcard,atom=wildcard,orbital=wildcard,tag='z',subscript=wildcard)
 Base.fieldnames(::Type{<:SCID})=(:center,:atom,:orbital,:tag,:subscript)
 
 """
-    SpinCoupling(value::Number,id::ID{<:NTuple{N,SCID}},subscripts::Subscripts) where N
-    SpinCoupling{N}(    value::Number=1;
+    SpinCoupling(value,id::ID{<:Tuple{Vararg{SCID}}},subscripts::Subscripts)
+    SpinCoupling{N}(    value=1;
                         tags::NTuple{N,Char},
                         centers::Union{NTuple{N,Int},Nothing}=nothing,
                         atoms::Union{NTuple{N,Int},Nothing}=nothing,
@@ -209,13 +257,15 @@ Base.fieldnames(::Type{<:SCID})=(:center,:atom,:orbital,:tag,:subscript)
 
 Spin coupling.
 """
-struct SpinCoupling{N,V<:Number,I<:ID{<:NTuple{N,SCID}},S<:Subscripts} <: Coupling{N,V,I}
+struct SpinCoupling{V,I<:ID,S<:Subscripts} <: Coupling{V,I}
     value::V
     id::I
     subscripts::S
-    SpinCoupling(value::Number,id::ID{<:NTuple{N,SCID}},subscripts::Subscripts) where N=new{N,value|>typeof,id|>typeof,typeof(subscripts)}(value,id,subscripts)
+    function SpinCoupling(value,id::ID{<:Tuple{Vararg{SCID}}},subscripts::Subscripts)
+        new{typeof(value),typeof(id),typeof(subscripts)}(value,id,subscripts)
+    end
 end
-function SpinCoupling{N}(   value::Number=1;
+function SpinCoupling{N}(   value=1;
                             tags::NTuple{N,Char},
                             centers::Union{NTuple{N,Int},Nothing}=nothing,
                             atoms::Union{NTuple{N,Int},Nothing}=nothing,
@@ -272,6 +322,13 @@ Get the multiplication between two spin couplings.
 Base.:*(sc1::SpinCoupling,sc2::SpinCoupling)=SpinCoupling(sc1.value*sc2.value,sc1.id*sc2.id,sc1.subscripts*sc2.subscripts)
 
 """
+    rawelement(::Type{<:SpinCoupling})
+
+Get the raw name of a type of SpinCoupling.
+"""
+rawelement(::Type{<:SpinCoupling})=SpinCoupling
+
+"""
     expand(sc::SpinCoupling,pid::PID,spin::Spin,kind::Union{Val{K},Nothing}=nothing) where K -> Union{SCExpand,Tuple{}}
     expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},kind::Union{Val{K},Nothing}=nothing) where {N,K} -> Union{SCExpand,Tuple{}}
 
@@ -290,7 +347,7 @@ function expand(sc::SpinCoupling,pids::NTuple{N,PID},spins::NTuple{N,Spin},kind:
     return SCExpand(sc.value,rpids,sbexpands,sps,sc.id.tags)
 end
 couplingcenter(::Type{<:SpinCoupling},i::Int,n::Int,::Val{2})=i%2==1 ? 1 : 2
-struct SCExpand{V<:Number,N,S} <: VectorSpace{Tuple{V,NTuple{N,SIndex{S}}}}
+struct SCExpand{V,N,S} <: VectorSpace{Tuple{V,NTuple{N,SIndex{S}}}}
     value::V
     pids::NTuple{N,PID{S}}
     sbexpands::Vector{NTuple{N,Int}}
@@ -300,23 +357,35 @@ end
 IsMultiIndexable(::Type{<:SCExpand})=IsMultiIndexable(true)
 MultiIndexOrderStyle(::Type{<:SCExpand})=MultiIndexOrderStyle('C')
 dims(sce::SCExpand)=(length(sce.sbexpands),)
-@generated function Tuple(index::Tuple{Int},sce::SCExpand{<:Number,N}) where N
+@generated function Tuple(index::Tuple{Int},sce::SCExpand{V,N}) where {V,N}
     exprs=[:(SIndex(sce.pids[$i],SID(sce.sbexpands[index[1]][$i],sce.spins[$i],sce.tags[$i]))) for i=1:N]
     return Expr(:tuple,:(sce.value),Expr(:tuple,exprs...))
 end
 
 """
-    Heisenberg(;centers::Union{NTuple{2,Int},Nothing}=nothing,
+    Heisenberg( mode::String="+-z";
+                centers::Union{NTuple{2,Int},Nothing}=nothing,
                 atoms::Union{NTuple{2,Int},Nothing}=nothing,
                 orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
-                ) -> Couplings{ID{<:NTuple{2,SCID}},SpinCoupling{2,Float,ID{<:NTuple{2,SCID}}}}
+                ) -> Couplings{ID,SpinCoupling{Rational{Int}/Int,ID{<:NTuple{2,SCID}}}}
 
 The Heisenberg couplings.
 """
-function Heisenberg(;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Union{NTuple{2,Int},Nothing}=nothing,orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing)
-    sc1=SpinCoupling{2}(0.5,centers=centers,atoms=atoms,orbitals=orbitals,tags=('+','-'))
-    sc2=SpinCoupling{2}(0.5,centers=centers,atoms=atoms,orbitals=orbitals,tags=('-','+'))
-    sc3=SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=('z','z'))
+function Heisenberg(mode::String="+-z";
+                    centers::Union{NTuple{2,Int},Nothing}=nothing,
+                    atoms::Union{NTuple{2,Int},Nothing}=nothing,
+                    orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
+                    )
+    @assert mode=="+-z" || mode=="xyz" "Heisenberg error: not supported mode($mode)."
+    if mode=="+-z"
+        sc1=SpinCoupling{2}(1//2,centers=centers,atoms=atoms,orbitals=orbitals,tags=('+','-'))
+        sc2=SpinCoupling{2}(1//2,centers=centers,atoms=atoms,orbitals=orbitals,tags=('-','+'))
+        sc3=SpinCoupling{2}(1//1,centers=centers,atoms=atoms,orbitals=orbitals,tags=('z','z'))
+    else
+        sc1=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=('x','x'))
+        sc2=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=('y','y'))
+        sc3=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=('z','z'))
+    end
     return Couplings(sc1,sc2,sc3)
 end
 
@@ -325,13 +394,13 @@ end
             centers::Union{NTuple{2,Int},Nothing}=nothing,
             atoms::Union{NTuple{2,Int},Nothing}=nothing,
             orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
-            ) -> Couplings{ID{<:NTuple{2,SCID}},SpinCoupling{2,Float,ID{<:NTuple{2,SCID}}}}
+            ) -> Couplings{ID,SpinCoupling{Int,ID{<:NTuple{2,SCID}}}}
 
 The Ising couplings.
 """
 function Ising(tag::Char;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Union{NTuple{2,Int},Nothing}=nothing,orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing)
     @assert tag in ('x','y','z') "Ising error: not supported input tag($tag)."
-    return Couplings(SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(tag,tag)))
+    return Couplings(SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=(tag,tag)))
 end
 
 """
@@ -339,15 +408,30 @@ end
             centers::Union{NTuple{2,Int},Nothing}=nothing,
             atoms::Union{NTuple{2,Int},Nothing}=nothing,
             orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
-            ) -> Couplings{ID{<:NTuple{2,SCID}},SpinCoupling{2,Float,ID{<:NTuple{2,SCID}}}}
+            ) -> Couplings{ID,SpinCoupling{Int,ID{<:NTuple{2,SCID}}}}
 
 The Gamma couplings.
 """
 function Gamma(tag::Char;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Union{NTuple{2,Int},Nothing}=nothing,orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing)
     @assert tag in ('x','y','z') "Gamma error: not supported input tag($tag)."
     t1,t2=tag=='x' ? ('y','z') : tag=='y' ? ('z','x') : ('x','y')
-    sc1=SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t1,t2))
-    sc2=SpinCoupling{2}(1.0,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t2,t1))
+    sc1=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t1,t2))
+    sc2=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t2,t1))
+    return Couplings(sc1,sc2)
+end
+
+"""
+    DM( tag::Char;
+        centers::Union{NTuple{2,Int},Nothing}=nothing,
+        atoms::Union{NTuple{2,Int},Nothing}=nothing,
+        orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing
+        ) -> Couplings{ID,SpinCoupling{Int,ID{<:NTuple{2,SCID}}}}
+"""
+function DM(tag::Char;centers::Union{NTuple{2,Int},Nothing}=nothing,atoms::Union{NTuple{2,Int},Nothing}=nothing,orbitals::Union{NTuple{2,Int},Subscript,Nothing}=nothing)
+    @assert tag in ('x','y','z') "DM error: not supported input tag($tag)."
+    t1,t2=tag=='x' ? ('y','z') : tag=='y' ? ('z','x') : ('x','y')
+    sc1=SpinCoupling{2}(1,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t1,t2))
+    sc2=SpinCoupling{2}(-1,centers=centers,atoms=atoms,orbitals=orbitals,tags=(t2,t1))
     return Couplings(sc1,sc2)
 end
 
@@ -355,34 +439,34 @@ scsinglewrapper(::Nothing)=nothing
 scsinglewrapper(value::Int)=(value,)
 
 """
-    Sˣ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{I,SpinCoupling{1,Float,I}}  where I<:ID{<:Tuple{SCID}}
+    Sˣ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{ID,SpinCoupling{Int,ID{<:Tuple{SCID}}}}
 
 The single Sˣ coupling.
 """
 function Sˣ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing)
-    Couplings(SpinCoupling{1}(1.0,tags=('x',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
+    Couplings(SpinCoupling{1}(1,tags=('x',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
 end
 
 """
-    Sʸ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{I,SpinCoupling{1,Float,I}}  where I<:ID{<:Tuple{SCID}}
+    Sʸ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{ID,SpinCoupling{Int,ID{<:Tuple{SCID}}}}
 
 The single Sʸ coupling.
 """
 function Sʸ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing)
-    Couplings(SpinCoupling{1}(1.0,tags=('y',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
+    Couplings(SpinCoupling{1}(1,tags=('y',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
 end
 
 """
-    Sᶻ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{I,SpinCoupling{1,Float,I}}  where I<:ID{<:Tuple{SCID}}
+    Sᶻ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing) -> Couplings{ID,SpinCoupling{Int,ID{<:Tuple{SCID}}}}
 
 The single Sᶻ coupling.
 """
 function Sᶻ(;atom::Union{Int,Nothing}=nothing,orbital::Union{Int,Nothing}=nothing)
-    Couplings(SpinCoupling{1}(1.0,tags=('z',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
+    Couplings(SpinCoupling{1}(1,tags=('z',),atoms=scsinglewrapper(atom),orbitals=scsinglewrapper(orbital)))
 end
 
 """
-    SpinTerm{R}(id::Symbol,value::Number,bondkind::Any;
+    SpinTerm{R}(id::Symbol,value::Any,bondkind::Any;
                 couplings::Union{Function,Coupling,Couplings},
                 amplitude::Union{Function,Nothing}=nothing,
                 modulate::Union{Function,Bool}=false,
@@ -390,10 +474,10 @@ end
 
 Spin term.
 
-Type alias for `Term{'B',:SpinTerm,R,id,<:Number,<:Any,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
+Type alias for `Term{'B',:SpinTerm,R,id,V,<:Any,<:TermCouplings,<:TermAmplitude,<:Union{TermModulate,Nothing}}`.
 """
-const SpinTerm{R,id,V<:Number,B<:Any,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{'B',:SpinTerm,R,id,V,B,C,A,M}
-function SpinTerm{R}(id::Symbol,value::Number,bondkind::Any;
+const SpinTerm{R,id,V,B<:Any,C<:TermCouplings,A<:TermAmplitude,M<:Union{TermModulate,Nothing}}=Term{'B',:SpinTerm,R,id,V,B,C,A,M}
+function SpinTerm{R}(id::Symbol,value::Any,bondkind::Any;
                     couplings::Union{Function,Coupling,Couplings},
                     amplitude::Union{Function,Nothing}=nothing,
                     modulate::Union{Function,Bool}=false,
@@ -411,6 +495,6 @@ isHermitian(::Type{<:SpinTerm})=true
 
 Get the operator type of a spin term.
 """
-otype(T::Type{<:SpinTerm},I::Type{<:OID})=SOperator{T|>rank,T|>valtype,ID{NTuple{T|>rank,I}}}
+otype(T::Type{<:SpinTerm},I::Type{<:OID})=SOperator{T|>valtype,ID{NTuple{T|>rank,I}}}
 
 end # module

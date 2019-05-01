@@ -2,10 +2,11 @@ using Test
 using StaticArrays: SVector
 using QuantumLattices.Essentials.SpinPackage
 using QuantumLattices.Essentials.Spatials: PID,Point,Bond
-using QuantumLattices.Essentials.DegreesOfFreedom: Table,OID,isHermitian,IDFConfig,Operators,oidtype,otype,optdefaultlatex
+using QuantumLattices.Essentials.DegreesOfFreedom: Table,OID,isHermitian,IDFConfig,Operators,oidtype,otype,optdefaultlatex,script,iid
 using QuantumLattices.Essentials.Terms: Couplings,@subscript,statistics,abbr
-using QuantumLattices.Interfaces: dims,inds,expand,matrix
+using QuantumLattices.Interfaces: dims,inds,expand,matrix,permute,rank
 using QuantumLattices.Prerequisites: Float
+using QuantumLattices.Mathematics.Combinatorics: Permutations
 using QuantumLattices.Mathematics.AlgebraOverFields: ID,rawelement
 using QuantumLattices.Mathematics.VectorSpaces: IsMultiIndexable,MultiIndexOrderStyle
 
@@ -57,18 +58,36 @@ end
 end
 
 @testset "oidtype" begin
-    @test oidtype(SID,Point{2,PID{Int}},Nothing)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
-    @test oidtype(SID,Point{2,PID{Int}},Table)==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(SID,Point{2,PID{Int}},Nothing,Val(true))==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}
+    @test oidtype(SID,Point{2,PID{Int}},Table,Val(true))==OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}
+    @test oidtype(SID,Point{2,PID{Int}},Nothing,Val(false))==OID{SIndex{Int},Nothing,Nothing,Nothing}
+    @test oidtype(SID,Point{2,PID{Int}},Table,Val(false))==OID{SIndex{Int},Nothing,Nothing,Int}
 end
 
 @testset "SOperator" begin
-    @test rawelement(SOperator{N,<:Number,<:ID{<:NTuple{N,OID}}} where N)==SOperator
+    @test rawelement(SOperator{V} where V)==SOperator
     @test optdefaultlatex(SOperator)==soptdefaultlatex
     opt=SOperator(1.0,(SIndex('a',1,1,0.5,'+'),SIndex('a',1,1,0.5,'-')))
     @test opt|>statistics==opt|>typeof|>statistics=='B'
     @test opt'==SOperator(1.0,(SIndex('a',1,1,0.5,'+'),SIndex('a',1,1,0.5,'-')))
     @test isHermitian(opt)
-    @test repr(opt)=="1.0S^{+}_{1,1}S^{-}_{1,1}"
+    @test repr(opt)=="S^{+}_{1,1}S^{-}_{1,1}"
+end
+
+@testset "permute" begin
+    soptrep(opt::SOperator)=opt.value*prod([matrix(opt.id[i].index|>iid) for i=1:rank(opt)])
+    for S in (0.5,1.0,1.5)
+        oids=[OID(SIndex('S',1,2,S,tag),seq=i) for (i,tag) in enumerate(('x','y','z','+','-'))]
+        table=Dict(oid.index=>oid.seq for oid in oids)
+        for (id1,id2) in Permutations{2}(oids)
+            left=soptrep(SOperator(1,ID(id1,id2)))
+            right=sum([soptrep(opt) for opt in permute(SOperator,id1,id2,table)])
+            @test isapprox(left,right)
+        end
+    end
+    id1=OID(SIndex('S',1,2,0.5,'z'))
+    id2=OID(SIndex('S',2,2,0.5,'z'))
+    @test permute(SOperator,id1,id2,nothing)==(SOperator(1,ID(id2,id1)),)
 end
 
 @testset "SCID" begin
@@ -76,6 +95,8 @@ end
 end
 
 @testset "SpinCoupling" begin
+    @test rawelement(SpinCoupling{V} where V)==SpinCoupling
+
     @test SpinCoupling{2}(1.0,tags=('+','-'))|>string=="SpinCoupling(value=1.0,tags=(+,-))"
     @test SpinCoupling{2}(1.0,atoms=(1,1),tags=('z','z'))|>string=="SpinCoupling(value=1.0,atoms=(1,1),tags=(z,z))"
     @test SpinCoupling{2}(1.0,atoms=(1,1),orbitals=(1,2),tags=('-','+'))|>string=="SpinCoupling(value=1.0,atoms=(1,1),orbitals=(1,2),tags=(-,+))"
@@ -107,39 +128,49 @@ end
 end
 
 @testset "Heisenberg" begin
-    @test Heisenberg(orbitals=(1,2))==Couplings(SpinCoupling{2}(1.0,tags=('z','z'),orbitals=(1,2)),
-                                                SpinCoupling{2}(0.5,tags=('+','-'),orbitals=(1,2)),
-                                                SpinCoupling{2}(0.5,tags=('-','+'),orbitals=(1,2))
+    @test Heisenberg(orbitals=(1,2))==Couplings(SpinCoupling{2}(1//1,tags=('z','z'),orbitals=(1,2)),
+                                                SpinCoupling{2}(1//2,tags=('+','-'),orbitals=(1,2)),
+                                                SpinCoupling{2}(1//2,tags=('-','+'),orbitals=(1,2))
                                                 )
+    @test Heisenberg("xyz")==Couplings( SpinCoupling{2}(1,tags=('x','x')),
+                                        SpinCoupling{2}(1,tags=('y','y')),
+                                        SpinCoupling{2}(1,tags=('z','z'))
+                                        )
 end
 
 @testset "Ising" begin
-    @test Ising('x',atoms=(1,2))==Couplings(SpinCoupling{2}(1.0,tags=('x','x'),atoms=(1,2)))
-    @test Ising('y',atoms=(1,2))==Couplings(SpinCoupling{2}(1.0,tags=('y','y'),atoms=(1,2)))
-    @test Ising('z',atoms=(1,2))==Couplings(SpinCoupling{2}(1.0,tags=('z','z'),atoms=(1,2)))
+    @test Ising('x',atoms=(1,2))==Couplings(SpinCoupling{2}(1,tags=('x','x'),atoms=(1,2)))
+    @test Ising('y',atoms=(1,2))==Couplings(SpinCoupling{2}(1,tags=('y','y'),atoms=(1,2)))
+    @test Ising('z',atoms=(1,2))==Couplings(SpinCoupling{2}(1,tags=('z','z'),atoms=(1,2)))
 end
 
 @testset "Gamma" begin
-    @test Gamma('x',orbitals=(1,1))==SpinCoupling{2}(1.0,tags=('y','z'),orbitals=(1,1))+SpinCoupling{2}(1.0,tags=('z','y'),orbitals=(1,1))
-    @test Gamma('y',atoms=(1,2))==SpinCoupling{2}(1.0,tags=('z','x'),atoms=(1,2))+SpinCoupling{2}(1.0,tags=('x','z'),atoms=(1,2))
-    @test Gamma('z')==SpinCoupling{2}(1.0,tags=('x','y'))+SpinCoupling{2}(1.0,tags=('y','x'))
+    @test Gamma('x',orbitals=(1,1))==SpinCoupling{2}(1,tags=('y','z'),orbitals=(1,1))+SpinCoupling{2}(1,tags=('z','y'),orbitals=(1,1))
+    @test Gamma('y',atoms=(1,2))==SpinCoupling{2}(1,tags=('z','x'),atoms=(1,2))+SpinCoupling{2}(1,tags=('x','z'),atoms=(1,2))
+    @test Gamma('z')==SpinCoupling{2}(1,tags=('x','y'))+SpinCoupling{2}(1,tags=('y','x'))
+end
+
+@testset "DM" begin
+    @test DM('x',orbitals=(1,1))==SpinCoupling{2}(1,tags=('y','z'),orbitals=(1,1))-SpinCoupling{2}(1,tags=('z','y'),orbitals=(1,1))
+    @test DM('y',atoms=(1,2))==SpinCoupling{2}(1,tags=('z','x'),atoms=(1,2))-SpinCoupling{2}(1,tags=('x','z'),atoms=(1,2))
+    @test DM('z')==SpinCoupling{2}(1,tags=('x','y'))-SpinCoupling{2}(1,tags=('y','x'))
 end
 
 @testset "Sᵅ" begin
-    @test Sˣ(atom=1,orbital=1)==Couplings(SpinCoupling{1}(1.0,tags=('x',),atoms=(1,),orbitals=(1,)))
-    @test Sʸ(atom=1)==Couplings(SpinCoupling{1}(1.0,tags=('y',),atoms=(1,)))
-    @test Sᶻ(orbital=1)==Couplings(SpinCoupling{1}(1.0,tags=('z',),orbitals=(1,)))
+    @test Sˣ(atom=1,orbital=1)==Couplings(SpinCoupling{1}(1,tags=('x',),atoms=(1,),orbitals=(1,)))
+    @test Sʸ(atom=1)==Couplings(SpinCoupling{1}(1,tags=('y',),atoms=(1,)))
+    @test Sᶻ(orbital=1)==Couplings(SpinCoupling{1}(1,tags=('z',),orbitals=(1,)))
 end
 
 @testset "SpinTerm" begin
     term=SpinTerm{1}(:h,1.5,0,couplings=Sᶻ())
     @test term|>abbr==:sp
-    @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==SOperator{1,Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
-    @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int})==SOperator{1,Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
+    @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing})==SOperator{Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Nothing}}}}
+    @test otype(term|>typeof,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int})==SOperator{Float,ID{NTuple{1,OID{SIndex{Int},SVector{2,Float},SVector{2,Float},Int}}}}
 
     point=Point(PID('a',1),(0.5,0.5),(0.0,0.0))
     config=IDFConfig{Spin}(pid->Spin(atom=pid.site%2,norbital=2,spin=0.5),[point.pid])
-    table=Table(config,by=usualspinindextotuple)
+    table=Table(config,usualspinindextotuple)
     term=SpinTerm{1}(:h,1.5,0,couplings=Sᶻ())
     operators=Operators(SOperator(1.5,ID(OID(SIndex('a',1,1,0.5,'z'),[0.5,0.5],[0.0,0.0],1))),
                         SOperator(1.5,ID(OID(SIndex('a',1,2,0.5,'z'),[0.5,0.5],[0.0,0.0],2)))
@@ -148,7 +179,7 @@ end
 
     bond=Bond(1,Point(PID('a',1),(0.0,0.0),(0.0,0.0)),Point(PID('b',1),(0.5,0.5),(0.0,0.0)))
     config=IDFConfig{Spin}(pid->Spin(atom=pid.site%2,norbital=2,spin=0.5),[bond.spoint.pid,bond.epoint.pid])
-    table=Table(config,by=usualspinindextotuple)
+    table=Table(config,usualspinindextotuple)
     term=SpinTerm{2}(:J,1.5,1,couplings=Heisenberg())
     operators=Operators(SOperator(1.50,ID(OID(SIndex('b',1,2,0.5,'z'),[0.5,0.5],[0.0,0.0],4),OID(SIndex('a',1,2,0.5,'z'),[0.0,0.0],[0.0,0.0],2))),
                         SOperator(0.75,ID(OID(SIndex('b',1,2,0.5,'-'),[0.5,0.5],[0.0,0.0],4),OID(SIndex('a',1,2,0.5,'+'),[0.0,0.0],[0.0,0.0],2))),
